@@ -1,24 +1,34 @@
 --[[
-    Nebula UI v3
+    Nebula UI v4
     Universal Roblox/Luau UI Framework
+    Built on top of Nebula UI v3 - visuals unchanged, architecture layered on top.
 
-    Changelog v3:
-    - Reworked visual design: soft borders, gradients, accent glow, refined spacing
-    - Smooth animations everywhere (Quint/Back easing, scale pops, fade transitions)
-    - Minimize now fades the body instead of snapping
-    - Window scales from its center on open/close
-    - Full color picker (SV square + hue bar + RGB/Hex inputs)
-    - Dropdowns / MultiDropdowns close when clicking outside, scrollable lists
-    - Keybind: Escape cancels capture; no more duplicate firing while listening
-    - All per-element RBXScriptConnections are tracked and cleaned up on Unload
-    - Theme system now recolors UIStroke borders and scrollbars too
-    - Search moved into content header, shows current tab name
-    - Button ripple effect, toggle spring animation, slider knob with glow
-    - Notifications: accent bar, type colors (Info/Success/Warning/Error), smoother motion
-    - Toggle keybind option (Window.ToggleKey) to show/hide the UI
-    - Fixed theme switch leaving stale colors on interactive elements
-    - Fixed Slider rounding producing float drift
-    - Fixed Mobile button always visible logic, added gentle pulse
+    Changelog v4 (architecture, per the v4 plan):
+    - Unified Component/Element API: every input element (Toggle, Slider, Button,
+      Dropdown, MultiDropdown, ColorPicker, Textbox, Keybind, Label, Paragraph)
+      now exposes the same base methods: Set/Get (where meaningful), SetVisible,
+      SetDisabled, SetName, Destroy - on top of whatever custom methods it had.
+    - Element IDs: options.ID = "GodMode" registers the element so it can be
+      fetched later with Window:GetElement(id) / Window:SetValue(id, value).
+    - State Manager: Window:SaveState() / Window:LoadState() / Window:GetState()
+      / Window:SetState(data) - works over every ID'd element automatically.
+    - Plugin API: Library:RegisterPlugin({Name, OnLoad, OnUnload}). Every Window
+      loads all registered plugins on creation and unloads them on Window:Unload().
+    - Unified Window:Track(connection): all connections (including the ones that
+      used to connect directly) now flow through the same tracked table so
+      Window:Unload() cleans everything up predictably.
+    - Element lifecycle hooks: Element:_ApplyTheme() (extension point for custom
+      elements/plugins) alongside the existing per-property theme binding.
+    - Responsive layout: Window { Responsive = true } detects viewport size,
+      resizes the window, collapses the sidebar into a toggle-able overlay on
+      small screens, and reflows any Layout Engine groups.
+    - Nebula Layout Engine: Tab:AddGroup({ Columns = 2 }) returns a Group with
+      the same AddToggle/AddSlider/AddButton/... methods as a Tab. Elements are
+      distributed round-robin across N columns on desktop, and automatically
+      collapse to a single column on small screens - no user code changes needed.
+
+    Nothing in v3's visuals (theming, animations, notifications, color picker,
+    dropdowns, search, mobile button) was rewritten - v4 wraps and extends it.
 ]]
 
 --------------------------------------------------
@@ -28,6 +38,7 @@
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -41,7 +52,17 @@ local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 -- DUPLICATE CLEANUP
 --------------------------------------------------
 
-local GUI_NAME = "__NebulaUI_v3"
+local GUI_NAME = "__NebulaUI_v4"
+local ACTIVE_WINDOW_KEY = "__NebulaUI_v4_ACTIVE_WINDOW"
+
+local previousWindow = rawget(_G, ACTIVE_WINDOW_KEY)
+if previousWindow and type(previousWindow.Unload) == "function" then
+    pcall(function()
+        previousWindow:Unload(true)
+    end)
+end
+
+rawset(_G, ACTIVE_WINDOW_KEY, nil)
 
 for _, child in ipairs(PlayerGui:GetChildren()) do
     if child.Name == GUI_NAME then
@@ -57,8 +78,28 @@ end
 
 local Library = {}
 
-Library.Version = "3.0.0"
+Library.Version = "4.1.0"
 Library.Name = "Nebula UI"
+Library.Plugins = {}
+
+--------------------------------------------------
+-- PLUGIN API
+--------------------------------------------------
+
+-- Library:RegisterPlugin({
+--     Name = "MyPlugin",
+--     OnLoad = function(Window) end,
+--     OnUnload = function(Window) end,
+-- })
+function Library:RegisterPlugin(plugin)
+    if type(plugin) ~= "table" or type(plugin.Name) ~= "string" then
+        warn("[Nebula UI] RegisterPlugin requires a table with a Name field.")
+        return
+    end
+
+    table.insert(Library.Plugins, plugin)
+    return plugin
+end
 
 --------------------------------------------------
 -- THEMES
@@ -196,7 +237,7 @@ Library.Themes = {
 Library.CurrentTheme = Library.Themes.Midnight
 
 --------------------------------------------------
--- STATE
+-- STATE (low-level reactive key/value store, unchanged from v3)
 --------------------------------------------------
 
 function Library:CreateState()
@@ -303,7 +344,7 @@ local function CreateText(parent, text, size, font)
     return label
 end
 
-local function Ripple(button, theme)
+local function Ripple(button)
     local ripple = Instance.new("Frame")
     ripple.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
     ripple.BackgroundTransparency = 0.75
@@ -325,16 +366,6 @@ local function Ripple(button, theme)
             ripple:Destroy()
         end
     end)
-end
-
-local function Darken(color, amount)
-    local h, s, v = Color3.toHSV(color)
-    return Color3.fromHSV(h, s, math.clamp(v - (amount or 0.08), 0, 1))
-end
-
-local function Lighten(color, amount)
-    local h, s, v = Color3.toHSV(color)
-    return Color3.fromHSV(h, math.clamp(s - (amount or 0.1), 0, 1), math.clamp(v + (amount or 0.1), 0, 1))
 end
 
 --------------------------------------------------
@@ -359,14 +390,33 @@ function Library:CreateWindow(options)
     Window.Elements = {}
     Window.Tabs = {}
 
+    -- v4: unified element registry (every element created through a Tab or a
+    -- Group ends up in here, whether or not it has an ID).
+    Window.AllElements = {}
+    Window.ElementsByID = {}
+    Window._Groups = {}
+
     Window.Destroyed = false
     Window.Minimized = false
 
     Window.State = self:CreateState()
 
+    -- v4: Window.Size read before the open-animation section overwrites Main's
+    -- Size, so responsive logic and the open animation share one source of truth.
+    local finalSize = Window.Size
+
+    --------------------------------------------------
+    -- v4: UNIFIED TRACK (every connection in the library flows through this,
+    -- so Window:Unload() cleans everything up in one place)
+    --------------------------------------------------
+
     local function Track(connection)
         table.insert(Window._connections, connection)
         return connection
+    end
+
+    Window.Track = function(_, connection)
+        return Track(connection)
     end
 
     --------------------------------------------------
@@ -388,15 +438,19 @@ function Library:CreateWindow(options)
     --------------------------------------------------
 
     local function BindTheme(instance, property, themeKey)
-        table.insert(Window._themeBinds, {
+        local binding = {
             Instance = instance,
             Property = property,
             Key = themeKey
-        })
+        }
+
+        table.insert(Window._themeBinds, binding)
 
         pcall(function()
             instance[property] = Window.Theme[themeKey]
         end)
+
+        return binding
     end
 
     Window.BindTheme = BindTheme
@@ -486,16 +540,16 @@ function Library:CreateWindow(options)
 
     local TitleLabel = CreateText(Header, Window.Title, 16, Enum.Font.GothamBold)
     TitleLabel.Position = UDim2.fromOffset(18, 21)
-    TitleLabel.Size = UDim2.new(1, -130, 0, 24)
+    TitleLabel.Size = UDim2.new(1, -166, 0, 24)
     BindTheme(TitleLabel, "TextColor3", "Text")
 
     local SubtitleLabel = CreateText(Header, Window.Subtitle, 11, Enum.Font.Gotham)
     SubtitleLabel.Position = UDim2.fromOffset(18, 46)
-    SubtitleLabel.Size = UDim2.new(1, -130, 0, 16)
+    SubtitleLabel.Size = UDim2.new(1, -166, 0, 16)
     BindTheme(SubtitleLabel, "TextColor3", "SubText")
 
     --------------------------------------------------
-    -- WINDOW CONTROLS (minimize / close)
+    -- WINDOW CONTROLS (menu / minimize / close)
     --------------------------------------------------
 
     local function CreateControl(text, xOffset)
@@ -516,19 +570,23 @@ function Library:CreateWindow(options)
         BindTheme(btn, "TextColor3", "SubText")
         BindTheme(btn, "BackgroundColor3", "Tertiary")
 
-        btn.MouseEnter:Connect(function()
+        Track(btn.MouseEnter:Connect(function()
             Tween(btn, { BackgroundTransparency = 0, TextColor3 = Window.Theme.Text }, 0.15)
-        end)
+        end))
 
-        btn.MouseLeave:Connect(function()
+        Track(btn.MouseLeave:Connect(function()
             Tween(btn, { BackgroundTransparency = 1, TextColor3 = Window.Theme.SubText }, 0.15)
-        end)
+        end))
 
         return btn
     end
 
-    local Minimize = CreateControl("—", -78)
-    local Close = CreateControl("×", -42)
+    -- v4: Menu button, only shown once Responsive collapses the sidebar
+    local Menu = CreateControl("=", -114)
+    Menu.Visible = false
+
+    local Minimize = CreateControl("\226\128\148", -78)
+    local Close = CreateControl("\195\151", -42)
 
     --------------------------------------------------
     -- BODY (CanvasGroup for smooth fade)
@@ -546,10 +604,13 @@ function Library:CreateWindow(options)
     -- SIDEBAR
     --------------------------------------------------
 
+    local SIDEBAR_WIDTH = 160
+
     local Sidebar = Instance.new("Frame")
     Sidebar.Name = "Sidebar"
-    Sidebar.Size = UDim2.fromOffset(160, 0)
+    Sidebar.Size = UDim2.fromOffset(SIDEBAR_WIDTH, 0)
     Sidebar.BackgroundTransparency = 1
+    Sidebar.ZIndex = 2
     Sidebar.Parent = Body
 
     local TabList = Instance.new("ScrollingFrame")
@@ -576,8 +637,8 @@ function Library:CreateWindow(options)
 
     local Content = Instance.new("Frame")
     Content.Name = "Content"
-    Content.Position = UDim2.fromOffset(160, 0)
-    Content.Size = UDim2.new(1, -160, 1, 0)
+    Content.Position = UDim2.fromOffset(SIDEBAR_WIDTH, 0)
+    Content.Size = UDim2.new(1, -SIDEBAR_WIDTH, 1, 0)
     Content.BackgroundColor3 = Window.Theme.Background
     Content.BorderSizePixel = 0
     Content.Parent = Body
@@ -631,13 +692,13 @@ function Library:CreateWindow(options)
     BindTheme(SearchBox, "PlaceholderColor3", "SubText")
     BindTheme(searchStroke, "Color", "Border")
 
-    SearchBox.Focused:Connect(function()
+    Track(SearchBox.Focused:Connect(function()
         Tween(searchStroke, { Color = Window.Theme.Accent, Transparency = 0.1 }, 0.15)
-    end)
+    end))
 
-    SearchBox.FocusLost:Connect(function()
+    Track(SearchBox.FocusLost:Connect(function()
         Tween(searchStroke, { Color = Window.Theme.Border, Transparency = 0.3 }, 0.15)
-    end)
+    end))
 
     Padding(SearchBox, 0, 0, 0, 0)
 
@@ -712,11 +773,24 @@ function Library:CreateWindow(options)
         Window.Theme = selected
         Library.CurrentTheme = selected
 
-        for _, item in ipairs(Window._themeBinds) do
-            if item.Instance and item.Instance.Parent and selected[item.Key] then
+        for i = #Window._themeBinds, 1, -1 do
+            local item = Window._themeBinds[i]
+            local instance = item and item.Instance
+
+            if not instance or not instance.Parent then
+                table.remove(Window._themeBinds, i)
+            elseif selected[item.Key] then
                 pcall(function()
-                    Tween(item.Instance, { [item.Property] = selected[item.Key] }, 0.22)
+                    Tween(instance, { [item.Property] = selected[item.Key] }, 0.22)
                 end)
+            end
+        end
+
+        -- v4: lifecycle hook - lets custom elements/plugins react to theme swaps
+        -- beyond simple property binding.
+        for _, element in ipairs(Window.AllElements) do
+            if element._ApplyTheme then
+                pcall(element._ApplyTheme, element, selected)
             end
         end
     end
@@ -834,6 +908,217 @@ function Library:CreateWindow(options)
     end
 
     --------------------------------------------------
+    -- v4: ELEMENT FINALIZER (unified Component/Element API)
+    --------------------------------------------------
+
+    -- Every Tab:AddX / Group:AddX function calls this at the very end instead
+    -- of directly inserting into Tab.Elements. It:
+    --   1. Registers the element under Window.AllElements (for theme/state pass)
+    --   2. Registers it under Window.ElementsByID if options.ID was given
+    --   3. Fills in SetVisible / SetDisabled / SetName / Destroy / _ApplyTheme
+    --      for any element that didn't already define its own version
+    function Window:_Finalize(Tab, Element, options, titleLabel)
+        options = options or {}
+
+        Element.ID = options.ID
+        Element.Disabled = false
+        Element.Destroyed = false
+        Element._TitleLabel = Element._TitleLabel or titleLabel
+        Element._InputObjects = Element._InputObjects or {}
+
+        if Element.Root and Element.Root:IsA("GuiObject") then
+            Element._OriginalBackgroundTransparency = Element.Root.BackgroundTransparency
+        end
+
+        if not Element.SetVisible then
+            function Element:SetVisible(visible)
+                if Element.Root then
+                    Element.Root.Visible = visible ~= false
+                end
+            end
+        end
+
+        if not Element.SetDisabled then
+            function Element:SetDisabled(disabled)
+                Element.Disabled = disabled == true
+
+                if Element.Root and Element.Root:IsA("GuiObject") then
+                    local restoreTransparency = Element._OriginalBackgroundTransparency
+                    if restoreTransparency == nil then
+                        restoreTransparency = Element.Root.BackgroundTransparency
+                        Element._OriginalBackgroundTransparency = restoreTransparency
+                    end
+
+                    Tween(Element.Root, {
+                        BackgroundTransparency = Element.Disabled and math.max(restoreTransparency, 0.5) or restoreTransparency
+                    }, 0.15)
+                end
+
+                local function DisableObject(object)
+                    if object:IsA("GuiButton") then
+                        object.Active = not Element.Disabled
+                    end
+                end
+
+                if Element.Button and Element.Button:IsA("GuiButton") then
+                    DisableObject(Element.Button)
+                end
+
+                if Element.Root then
+                    for _, object in ipairs(Element.Root:GetDescendants()) do
+                        DisableObject(object)
+                    end
+                end
+            end
+        end
+
+        if not Element.SetName then
+            function Element:SetName(newName)
+                Element.Name = tostring(newName)
+                if Element._TitleLabel then
+                    Element._TitleLabel.Text = Element.Name
+                end
+            end
+        end
+
+        if not Element.Destroy then
+            function Element:Destroy()
+                if Element.Destroyed then
+                    return
+                end
+
+                Element.Destroyed = true
+
+                if Element._Cleanup then
+                    pcall(Element._Cleanup, Element)
+                end
+
+                local root = Element.Root
+                for i = #Window._themeBinds, 1, -1 do
+                    local binding = Window._themeBinds[i]
+                    local instance = binding and binding.Instance
+                    local belongsToElement = false
+
+                    if root and instance then
+                        if instance == root then
+                            belongsToElement = true
+                        else
+                            pcall(function()
+                                belongsToElement = instance:IsDescendantOf(root)
+                            end)
+                        end
+                    end
+
+                    if belongsToElement then
+                        table.remove(Window._themeBinds, i)
+                    end
+                end
+
+                if root then
+                    root:Destroy()
+                end
+
+                for i = #Tab.Elements, 1, -1 do
+                    if Tab.Elements[i] == Element then
+                        table.remove(Tab.Elements, i)
+                        break
+                    end
+                end
+
+                for i = #Window.AllElements, 1, -1 do
+                    if Window.AllElements[i] == Element then
+                        table.remove(Window.AllElements, i)
+                        break
+                    end
+                end
+
+                if Element.ID and Window.ElementsByID[Element.ID] == Element then
+                    Window.ElementsByID[Element.ID] = nil
+                end
+            end
+        end
+
+        if not Element._ApplyTheme then
+            -- Extension point: custom elements/plugins can override this to
+            -- react to Window:SetTheme() beyond simple property binding.
+            Element._ApplyTheme = function() end
+        end
+
+        table.insert(Tab.Elements, Element)
+        table.insert(Window.AllElements, Element)
+
+        if Element.ID then
+            if Window.ElementsByID[Element.ID] then
+                warn("[Nebula UI] Duplicate element ID:", Element.ID)
+            end
+            Window.ElementsByID[Element.ID] = Element
+        end
+
+        return Element
+    end
+
+    --------------------------------------------------
+    -- v4: ELEMENT LOOKUP / STATE MANAGER
+    --------------------------------------------------
+
+    function Window:GetElement(id)
+        return Window.ElementsByID[id]
+    end
+
+    function Window:SetValue(id, value)
+        local element = Window.ElementsByID[id]
+
+        if element and element.Set then
+            element:Set(value)
+        else
+            warn("[Nebula UI] SetValue: no settable element with ID", id)
+        end
+
+        return element
+    end
+
+    -- Collects {id -> value} for every ID'd element that exposes :Get()
+    function Window:GetState()
+        local data = {}
+
+        for id, element in pairs(Window.ElementsByID) do
+            if element.Get then
+                local ok, value = pcall(element.Get, element)
+                if ok then
+                    data[id] = value
+                end
+            end
+        end
+
+        return data
+    end
+
+    -- Applies {id -> value} onto every matching ID'd element that exposes :Set()
+    function Window:SetState(data)
+        data = data or {}
+
+        for id, value in pairs(data) do
+            local element = Window.ElementsByID[id]
+            if element and element.Set then
+                pcall(element.Set, element, value)
+            end
+        end
+    end
+
+    function Window:SaveState()
+        Window._SavedState = Window:GetState()
+        return Window._SavedState
+    end
+
+    function Window:LoadState()
+        if Window._SavedState then
+            Window:SetState(Window._SavedState)
+        end
+
+        return Window._SavedState
+    end
+
+    --------------------------------------------------
     -- TABS
     --------------------------------------------------
 
@@ -868,6 +1153,11 @@ function Library:CreateWindow(options)
 
         CurrentTabLabel.Text = tab.Name
         Window.ActiveTab = tab
+
+        -- v4: on mobile, picking a tab also closes the sidebar overlay
+        if Window.IsMobile and Sidebar.Visible then
+            Window:_CloseMobileSidebar()
+        end
     end
 
     function Window:AddTab(name, icon)
@@ -917,19 +1207,19 @@ function Library:CreateWindow(options)
         Tab.ButtonText = buttonText
         Tab.Indicator = Indicator
 
-        Button.MouseEnter:Connect(function()
+        Track(Button.MouseEnter:Connect(function()
             if Window.ActiveTab ~= Tab then
                 Tween(Button, { BackgroundTransparency = 0.55 }, 0.15)
                 Tween(buttonText, { TextColor3 = Window.Theme.Text }, 0.15)
             end
-        end)
+        end))
 
-        Button.MouseLeave:Connect(function()
+        Track(Button.MouseLeave:Connect(function()
             if Window.ActiveTab ~= Tab then
                 Tween(Button, { BackgroundTransparency = 1 }, 0.15)
                 Tween(buttonText, { TextColor3 = Window.Theme.SubText }, 0.15)
             end
-        end)
+        end))
 
         --------------------------------------------------
         -- TAB CONTENT
@@ -959,9 +1249,9 @@ function Library:CreateWindow(options)
 
         table.insert(Window.Tabs, Tab)
 
-        Button.MouseButton1Click:Connect(function()
+        Track(Button.MouseButton1Click:Connect(function()
             Window:SelectTab(Tab)
-        end)
+        end))
 
         --------------------------------------------------
         -- SEARCH
@@ -1013,31 +1303,35 @@ function Library:CreateWindow(options)
         -- LABEL
         --------------------------------------------------
 
-        function Tab:AddLabel(text)
+        function Tab:AddLabel(options)
+            -- v4: kept backward compatible with v3's Tab:AddLabel(text)
+            if type(options) == "string" or options == nil then
+                options = { Name = options }
+            end
+
             local holder = Instance.new("Frame")
             holder.Name = "Label"
             holder.Size = UDim2.new(1, 0, 0, 34)
             holder.BackgroundTransparency = 1
-            holder.Parent = Scroll
+            holder.Parent = options._Parent or Scroll
 
-            local label = CreateText(holder, text, 12, Enum.Font.Gotham)
+            local label = CreateText(holder, options.Name, 12, Enum.Font.Gotham)
             label.Position = UDim2.fromOffset(2, 0)
             label.Size = UDim2.new(1, -4, 1, 0)
             label.TextColor3 = Window.Theme.SubText
             label.TextWrapped = true
             BindTheme(label, "TextColor3", "SubText")
 
-            local element = {
+            local Element = {
                 Root = holder,
                 Name = "Label"
             }
 
-            function element:Set(_, value)
+            function Element:Set(_, value)
                 label.Text = tostring(value)
             end
 
-            table.insert(Tab.Elements, element)
-            return element
+            return Window:_Finalize(Tab, Element, options, label)
         end
 
         --------------------------------------------------
@@ -1045,12 +1339,20 @@ function Library:CreateWindow(options)
         --------------------------------------------------
 
         function Tab:AddParagraph(title, text)
+            local options = {}
+
+            if type(title) == "table" then
+                options = title
+            else
+                options = { Title = title, Text = text }
+            end
+
             local holder = Instance.new("Frame")
             holder.Name = "Paragraph"
             holder.Size = UDim2.new(1, 0, 0, 66)
             holder.BackgroundColor3 = Window.Theme.Secondary
             holder.BorderSizePixel = 0
-            holder.Parent = Scroll
+            holder.Parent = options._Parent or Scroll
 
             Corner(holder, 9)
             local holderStroke = Stroke(holder, Window.Theme.Border, 0.55)
@@ -1067,31 +1369,30 @@ function Library:CreateWindow(options)
             Corner(bar, 3)
             BindTheme(bar, "BackgroundColor3", "Accent")
 
-            local titleLabel = CreateText(holder, title or "Information", 12, Enum.Font.GothamBold)
+            local titleLabel = CreateText(holder, options.Title or "Information", 12, Enum.Font.GothamBold)
             titleLabel.Position = UDim2.fromOffset(14, 7)
             titleLabel.Size = UDim2.new(1, -26, 0, 20)
             titleLabel.TextColor3 = Window.Theme.Text
             BindTheme(titleLabel, "TextColor3", "Text")
 
-            local textLabel = CreateText(holder, text or "", 10, Enum.Font.Gotham)
+            local textLabel = CreateText(holder, options.Text or "", 10, Enum.Font.Gotham)
             textLabel.Position = UDim2.fromOffset(14, 29)
             textLabel.Size = UDim2.new(1, -26, 0, 28)
             textLabel.TextColor3 = Window.Theme.SubText
             textLabel.TextWrapped = true
             BindTheme(textLabel, "TextColor3", "SubText")
 
-            local element = {
+            local Element = {
                 Root = holder,
-                Name = title or "Paragraph"
+                Name = options.Title or "Paragraph"
             }
 
-            function element:Set(_, newTitle, newText)
+            function Element:Set(_, newTitle, newText)
                 titleLabel.Text = tostring(newTitle)
                 textLabel.Text = tostring(newText)
             end
 
-            table.insert(Tab.Elements, element)
-            return element
+            return Window:_Finalize(Tab, Element, options, titleLabel)
         end
 
         --------------------------------------------------
@@ -1108,7 +1409,7 @@ function Library:CreateWindow(options)
             holder.Name = Element.Name
             holder.Size = UDim2.new(1, 0, 0, options.Description and 62 or 46)
             holder.BackgroundTransparency = 1
-            holder.Parent = Scroll
+            holder.Parent = options._Parent or Scroll
 
             local button = Instance.new("TextButton")
             button.Size = UDim2.new(1, 0, 1, 0)
@@ -1138,34 +1439,30 @@ function Library:CreateWindow(options)
                 BindTheme(desc, "TextColor3", "SubText")
             end
 
-            button.MouseEnter:Connect(function()
+            Track(button.MouseEnter:Connect(function()
                 Tween(button, { BackgroundColor3 = Window.Theme.Hover }, 0.15)
                 Tween(buttonStroke, { Color = Window.Theme.BorderLight, Transparency = 0.3 }, 0.15)
-            end)
+            end))
 
-            button.MouseLeave:Connect(function()
+            Track(button.MouseLeave:Connect(function()
                 Tween(button, { BackgroundColor3 = Window.Theme.Secondary }, 0.15)
                 Tween(buttonStroke, { Color = Window.Theme.Border, Transparency = 0.55 }, 0.15)
-            end)
+            end))
 
-            button.MouseButton1Click:Connect(function()
+            Track(button.MouseButton1Click:Connect(function()
+                if Element.Disabled then return end
+
                 Ripple(button)
 
                 if options.Callback then
                     task.spawn(options.Callback)
                 end
-            end)
+            end))
 
             Element.Root = holder
             Element.Button = button
 
-            function Element:SetName(newName)
-                Element.Name = newName
-                label.Text = tostring(newName)
-            end
-
-            table.insert(Tab.Elements, Element)
-            return Element
+            return Window:_Finalize(Tab, Element, options, label)
         end
 
         --------------------------------------------------
@@ -1184,7 +1481,7 @@ function Library:CreateWindow(options)
             holder.Size = UDim2.new(1, 0, 0, options.Description and 56 or 46)
             holder.BackgroundColor3 = Window.Theme.Secondary
             holder.BorderSizePixel = 0
-            holder.Parent = Scroll
+            holder.Parent = options._Parent or Scroll
 
             Corner(holder, 9)
             local holderStroke = Stroke(holder, Window.Theme.Border, 0.55)
@@ -1272,12 +1569,12 @@ function Library:CreateWindow(options)
                 Element:Set(false)
             end
 
-            click.MouseButton1Click:Connect(function()
+            Track(click.MouseButton1Click:Connect(function()
+                if Element.Disabled then return end
                 Element:Set(not Element.Value)
-            end)
+            end))
 
             Element.Root = holder
-            table.insert(Tab.Elements, Element)
 
             if options.StateKey then
                 Window.State:Set(options.StateKey, Element.Value)
@@ -1288,7 +1585,7 @@ function Library:CreateWindow(options)
                     end
                 end)
 
-                table.insert(Window._connections, {
+                Track({
                     Disconnect = function()
                         if Element._StateConnection then
                             Element._StateConnection:Disconnect()
@@ -1297,7 +1594,7 @@ function Library:CreateWindow(options)
                 })
             end
 
-            return Element
+            return Window:_Finalize(Tab, Element, options, title)
         end
 
         --------------------------------------------------
@@ -1332,7 +1629,7 @@ function Library:CreateWindow(options)
             holder.Size = UDim2.new(1, 0, 0, options.Description and 76 or 62)
             holder.BackgroundColor3 = Window.Theme.Secondary
             holder.BorderSizePixel = 0
-            holder.Parent = Scroll
+            holder.Parent = options._Parent or Scroll
 
             Corner(holder, 9)
             local holderStroke = Stroke(holder, Window.Theme.Border, 0.55)
@@ -1451,6 +1748,8 @@ function Library:CreateWindow(options)
             end
 
             Track(input.InputBegan:Connect(function(i)
+                if Element.Disabled then return end
+
                 if i.UserInputType == Enum.UserInputType.MouseButton1
                 or i.UserInputType == Enum.UserInputType.Touch then
                     draggingSlider = true
@@ -1459,7 +1758,7 @@ function Library:CreateWindow(options)
                 end
             end))
 
-            Track(UserInputService.InputChanged:Connect(function(i)
+            TrackPicker(UserInputService.InputChanged:Connect(function(i)
                 if draggingSlider then
                     if i.UserInputType == Enum.UserInputType.MouseMovement
                     or i.UserInputType == Enum.UserInputType.Touch then
@@ -1468,7 +1767,7 @@ function Library:CreateWindow(options)
                 end
             end))
 
-            Track(UserInputService.InputEnded:Connect(function(i)
+            TrackPicker(UserInputService.InputEnded:Connect(function(i)
                 if i.UserInputType == Enum.UserInputType.MouseButton1
                 or i.UserInputType == Enum.UserInputType.Touch then
                     if draggingSlider then
@@ -1479,8 +1778,7 @@ function Library:CreateWindow(options)
             end))
 
             Element.Root = holder
-            table.insert(Tab.Elements, Element)
-            return Element
+            return Window:_Finalize(Tab, Element, options, title)
         end
 
         --------------------------------------------------
@@ -1519,7 +1817,7 @@ function Library:CreateWindow(options)
             holder.BackgroundColor3 = Window.Theme.Secondary
             holder.BorderSizePixel = 0
             holder.ClipsDescendants = true
-            holder.Parent = Scroll
+            holder.Parent = options._Parent or Scroll
 
             Corner(holder, 9)
             local holderStroke = Stroke(holder, Window.Theme.Border, 0.55)
@@ -1640,7 +1938,7 @@ function Library:CreateWindow(options)
             end
 
             function Element:OpenMenu()
-                if Element.IsOpen then
+                if Element.IsOpen or Element.Disabled then
                     return
                 end
 
@@ -1668,7 +1966,7 @@ function Library:CreateWindow(options)
                 Tween(arrow, { Rotation = 0 }, 0.2, Enum.EasingStyle.Back)
                 Tween(list, { Size = UDim2.new(1, -28, 0, 0) }, 0.18)
 
-                local closeTween = Tween(holder, { Size = UDim2.new(1, 0, 0, 46) }, 0.18)
+                Tween(holder, { Size = UDim2.new(1, 0, 0, 46) }, 0.18)
 
                 if overlay then
                     local o = overlay
@@ -1681,19 +1979,18 @@ function Library:CreateWindow(options)
                 end)
             end
 
-            selected.MouseButton1Click:Connect(function()
+            Track(selected.MouseButton1Click:Connect(function()
                 if Element.IsOpen then
                     Element:Close()
                 else
                     Element:OpenMenu()
                 end
-            end)
+            end))
 
             Rebuild()
 
             Element.Root = holder
-            table.insert(Tab.Elements, Element)
-            return Element
+            return Window:_Finalize(Tab, Element, options, title)
         end
 
         --------------------------------------------------
@@ -1721,7 +2018,7 @@ function Library:CreateWindow(options)
             holder.BackgroundColor3 = Window.Theme.Secondary
             holder.BorderSizePixel = 0
             holder.ClipsDescendants = true
-            holder.Parent = Scroll
+            holder.Parent = options._Parent or Scroll
 
             Corner(holder, 9)
             local holderStroke = Stroke(holder, Window.Theme.Border, 0.55)
@@ -1790,6 +2087,8 @@ function Library:CreateWindow(options)
 
                 selectedText.Text = #result > 0 and table.concat(result, ", ") or "Select..."
             end
+
+            local CloseMenu
 
             local function Rebuild()
                 for _, child in ipairs(list:GetChildren()) do
@@ -1881,7 +2180,7 @@ function Library:CreateWindow(options)
             end
 
             local function OpenMenu()
-                if isOpen then
+                if isOpen or Element.Disabled then
                     return
                 end
 
@@ -1899,7 +2198,7 @@ function Library:CreateWindow(options)
                 Tween(holder, { Size = UDim2.new(1, 0, 0, 56 + height) }, 0.22)
             end
 
-            local function CloseMenu()
+            CloseMenu = function()
                 if not isOpen then
                     return
                 end
@@ -1921,20 +2220,19 @@ function Library:CreateWindow(options)
                 end)
             end
 
-            selected.MouseButton1Click:Connect(function()
+            Track(selected.MouseButton1Click:Connect(function()
                 if isOpen then
                     CloseMenu()
                 else
                     OpenMenu()
                 end
-            end)
+            end))
 
             UpdateText()
             Rebuild()
 
             Element.Root = holder
-            table.insert(Tab.Elements, Element)
-            return Element
+            return Window:_Finalize(Tab, Element, options, title)
         end
 
         --------------------------------------------------
@@ -1953,7 +2251,7 @@ function Library:CreateWindow(options)
             holder.Size = UDim2.new(1, 0, 0, 52)
             holder.BackgroundColor3 = Window.Theme.Secondary
             holder.BorderSizePixel = 0
-            holder.Parent = Scroll
+            holder.Parent = options._Parent or Scroll
 
             Corner(holder, 9)
             local holderStroke = Stroke(holder, Window.Theme.Border, 0.55)
@@ -1988,11 +2286,11 @@ function Library:CreateWindow(options)
             BindTheme(box, "PlaceholderColor3", "SubText")
             BindTheme(boxStroke, "Color", "Border")
 
-            box.Focused:Connect(function()
+            Track(box.Focused:Connect(function()
                 Tween(boxStroke, { Color = Window.Theme.Accent, Transparency = 0.1 }, 0.15)
-            end)
+            end))
 
-            box.FocusLost:Connect(function(enterPressed)
+            Track(box.FocusLost:Connect(function(enterPressed)
                 Tween(boxStroke, { Color = Window.Theme.Border, Transparency = 0.45 }, 0.15)
 
                 Element.Value = box.Text
@@ -2000,7 +2298,7 @@ function Library:CreateWindow(options)
                 if options.Callback then
                     task.spawn(options.Callback, Element.Value, enterPressed)
                 end
-            end)
+            end))
 
             function Element:Set(value)
                 Element.Value = tostring(value or "")
@@ -2012,8 +2310,7 @@ function Library:CreateWindow(options)
             end
 
             Element.Root = holder
-            table.insert(Tab.Elements, Element)
-            return Element
+            return Window:_Finalize(Tab, Element, options, title)
         end
 
         --------------------------------------------------
@@ -2032,7 +2329,7 @@ function Library:CreateWindow(options)
             holder.Size = UDim2.new(1, 0, 0, 44)
             holder.BackgroundColor3 = Window.Theme.Secondary
             holder.BorderSizePixel = 0
-            holder.Parent = Scroll
+            holder.Parent = options._Parent or Scroll
 
             Corner(holder, 9)
             local holderStroke = Stroke(holder, Window.Theme.Border, 0.55)
@@ -2067,12 +2364,14 @@ function Library:CreateWindow(options)
 
             local listening = false
 
-            key.MouseButton1Click:Connect(function()
+            Track(key.MouseButton1Click:Connect(function()
+                if Element.Disabled then return end
+
                 listening = true
                 keyText.Text = "..."
 
                 Tween(keyStroke, { Color = Window.Theme.Accent, Transparency = 0.1 }, 0.15)
-            end)
+            end))
 
             Track(UserInputService.InputBegan:Connect(function(input, processed)
                 if listening then
@@ -2100,7 +2399,7 @@ function Library:CreateWindow(options)
                     return
                 end
 
-                if processed then
+                if processed or Element.Disabled then
                     return
                 end
 
@@ -2123,8 +2422,7 @@ function Library:CreateWindow(options)
             end
 
             Element.Root = holder
-            table.insert(Tab.Elements, Element)
-            return Element
+            return Window:_Finalize(Tab, Element, options, title)
         end
 
         --------------------------------------------------
@@ -2146,7 +2444,7 @@ function Library:CreateWindow(options)
             holder.Size = UDim2.new(1, 0, 0, 44)
             holder.BackgroundColor3 = Window.Theme.Secondary
             holder.BorderSizePixel = 0
-            holder.Parent = Scroll
+            holder.Parent = options._Parent or Scroll
 
             Corner(holder, 9)
             local holderStroke = Stroke(holder, Window.Theme.Border, 0.55)
@@ -2198,6 +2496,21 @@ function Library:CreateWindow(options)
             -- popup
             local panel
             local hue, sat, val
+            local pickerConnections = {}
+
+            local function TrackPicker(connection)
+                table.insert(pickerConnections, connection)
+                return connection
+            end
+
+            local function DisconnectPickerConnections()
+                for i = #pickerConnections, 1, -1 do
+                    pcall(function()
+                        pickerConnections[i]:Disconnect()
+                    end)
+                    pickerConnections[i] = nil
+                end
+            end
 
             local function ApplyFromHSV()
                 local newColor = Color3.fromHSV(hue, sat, val)
@@ -2217,6 +2530,30 @@ function Library:CreateWindow(options)
                 end
 
                 pickerOpen = false
+                DisconnectPickerConnections()
+
+                local popupRoot = panel
+                if popupRoot then
+                    for i = #Window._themeBinds, 1, -1 do
+                        local binding = Window._themeBinds[i]
+                        local instance = binding and binding.Instance
+                        local belongsToPopup = false
+
+                        if instance then
+                            if instance == popupRoot then
+                                belongsToPopup = true
+                            else
+                                pcall(function()
+                                    belongsToPopup = instance:IsDescendantOf(popupRoot)
+                                end)
+                            end
+                        end
+
+                        if belongsToPopup then
+                            table.remove(Window._themeBinds, i)
+                        end
+                    end
+                end
 
                 if overlay then
                     local o = overlay
@@ -2464,7 +2801,7 @@ function Library:CreateWindow(options)
                     hexBox.Text = ToHex(Element.Value)
                 end
 
-                Track(svInput.InputBegan:Connect(function(i)
+                TrackPicker(svInput.InputBegan:Connect(function(i)
                     if i.UserInputType == Enum.UserInputType.MouseButton1
                     or i.UserInputType == Enum.UserInputType.Touch then
                         draggingSV = true
@@ -2472,7 +2809,7 @@ function Library:CreateWindow(options)
                     end
                 end))
 
-                Track(hueInput.InputBegan:Connect(function(i)
+                TrackPicker(hueInput.InputBegan:Connect(function(i)
                     if i.UserInputType == Enum.UserInputType.MouseButton1
                     or i.UserInputType == Enum.UserInputType.Touch then
                         draggingHue = true
@@ -2530,6 +2867,10 @@ function Library:CreateWindow(options)
                 Tween(panel, { BackgroundTransparency = 0, Size = UDim2.fromOffset(250, 262) }, 0.25, Enum.EasingStyle.Back)
             end
 
+            Element._Cleanup = function()
+                ClosePicker()
+            end
+
             function Element:Set(value)
                 if typeof(value) == "Color3" then
                     Element.Value = value
@@ -2546,7 +2887,9 @@ function Library:CreateWindow(options)
                 return Element.Value
             end
 
-            color.MouseButton1Click:Connect(function()
+            Track(color.MouseButton1Click:Connect(function()
+                if Element.Disabled then return end
+
                 if pickerOpen then
                     ClosePicker()
                     return
@@ -2554,11 +2897,10 @@ function Library:CreateWindow(options)
 
                 pickerOpen = true
                 BuildPicker()
-            end)
+            end))
 
             Element.Root = holder
-            table.insert(Tab.Elements, Element)
-            return Element
+            return Window:_Finalize(Tab, Element, options, title)
         end
 
         --------------------------------------------------
@@ -2576,7 +2918,7 @@ function Library:CreateWindow(options)
             frame.Size = UDim2.new(1, 0, 0, options.Height or 100)
             frame.BackgroundColor3 = Window.Theme.Secondary
             frame.BorderSizePixel = 0
-            frame.Parent = Scroll
+            frame.Parent = options._Parent or Scroll
 
             Corner(frame, 9)
             local frameStroke = Stroke(frame, Window.Theme.Border, 0.55)
@@ -2609,6 +2951,138 @@ function Library:CreateWindow(options)
         end
 
         --------------------------------------------------
+        -- v4: LAYOUT ENGINE - Tab:AddGroup({ Columns = N })
+        --------------------------------------------------
+
+        -- Returns a Group with the same AddX methods as a Tab. Elements added
+        -- to it are distributed round-robin across N side-by-side columns and
+        -- automatically collapse to a single column when Window.IsMobile is
+        -- true (Responsive = true on the Window), with no changes needed in
+        -- the caller's code.
+        function Tab:AddGroup(options)
+            options = options or {}
+
+            local Group = {}
+            Group.Name = options.Name or "Group"
+            Group.Columns = math.max(1, options.Columns or 2)
+            Group._Elements = {}
+
+            local holder = Instance.new("Frame")
+            holder.Name = Group.Name
+            holder.AutomaticSize = Enum.AutomaticSize.Y
+            holder.Size = UDim2.new(1, 0, 0, 0)
+            holder.BackgroundTransparency = 1
+            holder.Parent = options._Parent or Scroll
+
+            local rowLayout = Instance.new("UIListLayout")
+            rowLayout.FillDirection = Enum.FillDirection.Horizontal
+            rowLayout.Padding = UDim.new(0, 8)
+            rowLayout.SortOrder = Enum.SortOrder.LayoutOrder
+            rowLayout.Parent = holder
+
+            Group.Root = holder
+            Group.ColumnFrames = {}
+
+            local function BuildColumns(count)
+                for _, f in ipairs(Group.ColumnFrames) do
+                    f:Destroy()
+                end
+                table.clear(Group.ColumnFrames)
+
+                local gap = 8
+
+                for i = 1, count do
+                    local col = Instance.new("Frame")
+                    col.Name = "Column" .. i
+                    col.AutomaticSize = Enum.AutomaticSize.Y
+                    col.Size = UDim2.new(1 / count, -((count - 1) * gap) / count, 0, 0)
+                    col.BackgroundTransparency = 1
+                    col.LayoutOrder = i
+                    col.Parent = holder
+
+                    local layout = Instance.new("UIListLayout")
+                    layout.Padding = UDim.new(0, 8)
+                    layout.SortOrder = Enum.SortOrder.LayoutOrder
+                    layout.Parent = col
+
+                    table.insert(Group.ColumnFrames, col)
+                end
+            end
+
+            Group.CurrentColumns = (Window.IsMobile and 1) or Group.Columns
+            BuildColumns(Group.CurrentColumns)
+
+            local nextColumn = 1
+
+            local function GetTargetParent()
+                local col = Group.ColumnFrames[nextColumn]
+                nextColumn = nextColumn + 1
+                if nextColumn > #Group.ColumnFrames then
+                    nextColumn = 1
+                end
+                return col
+            end
+
+            local function Wrap(addFn)
+                return function(_, elOptions)
+                    elOptions = elOptions or {}
+                    elOptions._Parent = GetTargetParent()
+
+                    local element = addFn(Tab, elOptions)
+                    table.insert(Group._Elements, element)
+                    return element
+                end
+            end
+
+            Group.AddToggle = Wrap(Tab.AddToggle)
+            Group.AddSlider = Wrap(Tab.AddSlider)
+            Group.AddButton = Wrap(Tab.AddButton)
+            Group.AddDropdown = Wrap(Tab.AddDropdown)
+            Group.AddMultiDropdown = Wrap(Tab.AddMultiDropdown)
+            Group.AddTextbox = Wrap(Tab.AddTextbox)
+            Group.AddKeybind = Wrap(Tab.AddKeybind)
+            Group.AddColorPicker = Wrap(Tab.AddColorPicker)
+            Group.AddLabel = Wrap(Tab.AddLabel)
+            Group.AddParagraph = Wrap(Tab.AddParagraph)
+
+            -- Called by the Window's responsive handler; reflows every child
+            -- element into a new column count without touching user code.
+            function Group:_Relayout(isMobile)
+                local targetColumns = isMobile and 1 or Group.Columns
+
+                if targetColumns == Group.CurrentColumns then
+                    return
+                end
+
+                local roots = {}
+                for _, col in ipairs(Group.ColumnFrames) do
+                    for _, child in ipairs(col:GetChildren()) do
+                        if child:IsA("GuiObject") and not child:IsA("UIListLayout") then
+                            table.insert(roots, child)
+                        end
+                    end
+                end
+
+                for _, root in ipairs(roots) do
+                    root.Parent = nil
+                end
+
+                BuildColumns(targetColumns)
+                Group.CurrentColumns = targetColumns
+                nextColumn = 1
+
+                for _, root in ipairs(roots) do
+                    root.LayoutOrder = root.LayoutOrder or 0
+                    root.Parent = GetTargetParent()
+                end
+            end
+
+            table.insert(Window._Groups, Group)
+
+            return Group
+        end
+
+        --------------------------------------------------
         -- SELECT FIRST TAB
         --------------------------------------------------
 
@@ -2637,7 +3111,7 @@ function Library:CreateWindow(options)
 
     local savedSize = Window.Size
 
-    Minimize.MouseButton1Click:Connect(function()
+    Track(Minimize.MouseButton1Click:Connect(function()
         Window.Minimized = not Window.Minimized
 
         if Window.Minimized then
@@ -2666,15 +3140,15 @@ function Library:CreateWindow(options)
                 Tween(Body, { GroupTransparency = 0 }, 0.2)
             end)
         end
-    end)
+    end))
 
     --------------------------------------------------
     -- CLOSE
     --------------------------------------------------
 
-    Close.MouseButton1Click:Connect(function()
+    Track(Close.MouseButton1Click:Connect(function()
         Window:Unload()
-    end)
+    end))
 
     --------------------------------------------------
     -- TOGGLE KEYBIND
@@ -2720,7 +3194,7 @@ function Library:CreateWindow(options)
     })
     mobileGradient.Parent = MobileButton
 
-    MobileButton.MouseButton1Click:Connect(function()
+    Track(MobileButton.MouseButton1Click:Connect(function()
         Main.Visible = not Main.Visible
         Tween(MobileButton, { Size = UDim2.fromOffset(46, 46) }, 0.1, Enum.EasingStyle.Back)
         task.delay(0.1, function()
@@ -2728,7 +3202,7 @@ function Library:CreateWindow(options)
                 Tween(MobileButton, { Size = UDim2.fromOffset(50, 50) }, 0.15, Enum.EasingStyle.Back)
             end
         end)
-    end)
+    end))
 
     -- gentle pulse
     task.spawn(function()
@@ -2755,6 +3229,114 @@ function Library:CreateWindow(options)
     end)
 
     --------------------------------------------------
+    -- v4: RESPONSIVE LAYOUT
+    --------------------------------------------------
+
+    Window.Responsive = options.Responsive == true
+    Window.IsMobile = false
+
+    local function GetViewportSize()
+        local camera = Workspace.CurrentCamera
+        return (camera and camera.ViewportSize) or Vector2.new(1280, 720)
+    end
+
+    function Window:_CloseMobileSidebar()
+        Sidebar.Visible = false
+    end
+
+    Track(Menu.MouseButton1Click:Connect(function()
+        if not Window.IsMobile then return end
+
+        Sidebar.Visible = not Sidebar.Visible
+        if Sidebar.Visible then
+            Sidebar.ZIndex = 50
+        end
+    end))
+
+    local function ApplyDesktopLayout()
+        Menu.Visible = false
+        Sidebar.Visible = true
+        Sidebar.ZIndex = 2
+        Sidebar.Size = UDim2.fromOffset(SIDEBAR_WIDTH, 0)
+        Sidebar.BackgroundTransparency = 1
+
+        Content.Position = UDim2.fromOffset(SIDEBAR_WIDTH, 0)
+        Content.Size = UDim2.new(1, -SIDEBAR_WIDTH, 1, 0)
+
+        if not Window.Minimized then
+            Main.Size = finalSize
+        end
+    end
+
+    local function ApplyMobileLayout()
+        Menu.Visible = true
+        Sidebar.Visible = false
+        Sidebar.ZIndex = 50
+        Sidebar.Size = UDim2.new(0, math.min(SIDEBAR_WIDTH + 30, 220), 1, 0)
+        Sidebar.BackgroundTransparency = 0
+        Sidebar.BackgroundColor3 = Window.Theme.Background
+
+        Content.Position = UDim2.fromOffset(0, 0)
+        Content.Size = UDim2.new(1, 0, 1, 0)
+
+        if not Window.Minimized then
+            local viewport = GetViewportSize()
+            local width = math.min(finalSize.X.Offset, math.max(viewport.X - 24, 260))
+            local height = math.min(finalSize.Y.Offset, math.max(viewport.Y - 24, 320))
+            Main.Size = UDim2.fromOffset(width, height)
+        end
+    end
+
+    local function UpdateResponsive()
+        if not Window.Responsive then return end
+
+        local viewport = GetViewportSize()
+        local isMobile = viewport.X < 620
+
+        if isMobile == Window.IsMobile then
+            return
+        end
+
+        Window.IsMobile = isMobile
+
+        if isMobile then
+            ApplyMobileLayout()
+        else
+            ApplyDesktopLayout()
+        end
+
+        for _, group in ipairs(Window._Groups) do
+            group:_Relayout(isMobile)
+        end
+    end
+
+    if Window.Responsive then
+        local cameraViewportConnection
+
+        local function BindCamera(camera)
+            if cameraViewportConnection then
+                pcall(function()
+                    cameraViewportConnection:Disconnect()
+                end)
+                cameraViewportConnection = nil
+            end
+
+            if camera then
+                cameraViewportConnection = Track(camera:GetPropertyChangedSignal("ViewportSize"):Connect(UpdateResponsive))
+            end
+        end
+
+        BindCamera(Workspace.CurrentCamera)
+
+        Track(Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+            BindCamera(Workspace.CurrentCamera)
+            UpdateResponsive()
+        end))
+
+        UpdateResponsive()
+    end
+
+    --------------------------------------------------
     -- PUBLIC WINDOW API
     --------------------------------------------------
 
@@ -2772,6 +3354,8 @@ function Library:CreateWindow(options)
 
     function Window:SetSize(size)
         Window.Size = size
+        finalSize = size
+
         if not Window.Minimized then
             Main.Size = size
         end
@@ -2796,15 +3380,42 @@ function Library:CreateWindow(options)
     end
 
     --------------------------------------------------
+    -- v4: PLUGIN LOADING
+    --------------------------------------------------
+
+    Window._LoadedPlugins = {}
+
+    for _, plugin in ipairs(Library.Plugins) do
+        table.insert(Window._LoadedPlugins, plugin)
+
+        if plugin.OnLoad then
+            local ok, err = pcall(plugin.OnLoad, Window)
+            if not ok then
+                warn("[Nebula UI] Plugin '" .. tostring(plugin.Name) .. "' OnLoad error: " .. tostring(err))
+            end
+        end
+    end
+
+    --------------------------------------------------
     -- UNLOAD
     --------------------------------------------------
 
-    function Window:Unload()
+    function Window:Unload(immediate)
         if Window.Destroyed then
             return
         end
 
         Window.Destroyed = true
+
+        if rawget(_G, ACTIVE_WINDOW_KEY) == Window then
+            rawset(_G, ACTIVE_WINDOW_KEY, nil)
+        end
+
+        for _, plugin in ipairs(Window._LoadedPlugins) do
+            if plugin.OnUnload then
+                pcall(plugin.OnUnload, Window)
+            end
+        end
 
         for _, connection in ipairs(Window._connections) do
             pcall(function()
@@ -2812,7 +3423,20 @@ function Library:CreateWindow(options)
             end)
         end
 
-        Window.State:Destroy()
+        if Window.State then
+            Window.State:Destroy()
+        end
+
+        table.clear(Window.AllElements)
+        table.clear(Window.ElementsByID)
+        table.clear(Window._themeBinds)
+
+        if immediate then
+            pcall(function()
+                ScreenGui:Destroy()
+            end)
+            return
+        end
 
         Tween(Body, { GroupTransparency = 1 }, 0.15)
         Tween(Shadow, { ImageTransparency = 1 }, 0.2)
@@ -2832,13 +3456,15 @@ function Library:CreateWindow(options)
     -- OPEN ANIMATION
     --------------------------------------------------
 
-    local finalSize = Window.Size
+    -- Capture whatever size Responsive already settled on (mobile or
+    -- desktop) before zeroing out for the scale-in animation.
+    local openSize = Main.Size
 
     Main.Size = UDim2.fromOffset(0, 0)
     Shadow.ImageTransparency = 1
     Body.GroupTransparency = 1
 
-    local openTween = Tween(Main, { Size = finalSize }, 0.4, Enum.EasingStyle.Quint)
+    local openTween = Tween(Main, { Size = openSize }, 0.4, Enum.EasingStyle.Quint)
     Tween(Shadow, { ImageTransparency = 0.4 }, 0.5)
 
     openTween.Completed:Connect(function()
@@ -2861,6 +3487,8 @@ function Library:CreateWindow(options)
     -- RETURN
     --------------------------------------------------
 
+    rawset(_G, ACTIVE_WINDOW_KEY, Window)
+
     return Window
 end
 
@@ -2869,6 +3497,14 @@ end
 --------------------------------------------------
 
 function Library:Unload()
+    local activeWindow = rawget(_G, ACTIVE_WINDOW_KEY)
+
+    if activeWindow and type(activeWindow.Unload) == "function" then
+        pcall(function()
+            activeWindow:Unload()
+        end)
+    end
+
     for _, child in ipairs(PlayerGui:GetChildren()) do
         if child.Name == GUI_NAME then
             pcall(function()
