@@ -655,7 +655,7 @@ function Library:CreateWindow(options)
 
     local Sidebar = Instance.new("Frame")
     Sidebar.Name = "Sidebar"
-    Sidebar.Size = UDim2.fromOffset(SIDEBAR_WIDTH, 0)
+    Sidebar.Size = UDim2.new(0, SIDEBAR_WIDTH, 1, 0)
     Sidebar.BackgroundTransparency = 1
     Sidebar.ZIndex = 2
     Sidebar.Parent = Body
@@ -3653,7 +3653,7 @@ function Library:CreateWindow(options)
         MobileButton.Visible = false
         Sidebar.Visible = true
         Sidebar.ZIndex = 2
-        Sidebar.Size = UDim2.fromOffset(SIDEBAR_WIDTH, 0)
+        Sidebar.Size = UDim2.new(0, SIDEBAR_WIDTH, 1, 0)
         Sidebar.BackgroundTransparency = 1
 
         Content.Position = UDim2.fromOffset(SIDEBAR_WIDTH, 0)
@@ -3931,8 +3931,9 @@ function Library:CreateWindow(options)
     Window:SetTheme(options.Theme or "Nebula")
     Library.CurrentTheme = Window.Theme
 
+    local SettingsTab
     if options.ShowSettings ~= false then
-        local SettingsTab = Window:AddTab("Settings")
+        SettingsTab = Window:AddTab("Settings")
         SettingsTab:AddSection("Appearance")
 
         SettingsTab:AddDropdown({
@@ -4232,7 +4233,19 @@ function Library:CreateWindow(options)
         ShowLoadingScreen()
     end
 
-    if not Window.ActiveTab and Window.Tabs[1] then
+    -- Always start on the first user tab. Settings is a system tab and must
+    -- never steal the initial selection from the script using the library.
+    local firstUserTab = nil
+    for _, tab in ipairs(Window.Tabs) do
+        if tab ~= SettingsTab then
+            firstUserTab = tab
+            break
+        end
+    end
+
+    if firstUserTab then
+        Window:SelectTab(firstUserTab)
+    elseif Window.Tabs[1] then
         Window:SelectTab(Window.Tabs[1])
     end
 
@@ -4272,3 +4285,4 @@ end
 --------------------------------------------------
 
 return Library
+ 
