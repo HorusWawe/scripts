@@ -95,7 +95,7 @@ end
 
 local Library = {}
 
-Library.Version = "5.4.3"
+Library.Version = "5.5.0"
 Library.Name = "Nebula UI"
 Library.Plugins = {}
 
@@ -272,8 +272,8 @@ Library.Themes = {
     }
 }
 
-Library.CurrentTheme = Library.Themes.Purple
-Library.CurrentThemeName = "Purple"
+Library.CurrentTheme = Library.Themes.Nebula
+Library.CurrentThemeName = "Nebula"
 
 --------------------------------------------------
 -- STATE (low-level reactive key/value store, unchanged from v3)
@@ -465,6 +465,7 @@ function Library:CreateWindow(options)
         SavedActions = {},
     }
     Window._MobileButtonCustomColor = Window.MobileLayout.ButtonColor
+    Window._PendingMobileActions = {}
     Window.Appearance = {
         CornerRadius = tonumber(options.CornerRadius) or 12,
         UIScale = tonumber(options.UIScale) or 1,
@@ -477,7 +478,6 @@ function Library:CreateWindow(options)
     }
     Window._baseTextSizes = {}
     Window._OriginalTheme = {}
-    for key, value in pairs(self.Themes[self.CurrentTheme] or self.Themes.Nebula or {}) do Window._OriginalTheme[key] = value end
     Window._CustomThemeColors = {}
 
     Window.State = self:CreateState()
@@ -1598,7 +1598,25 @@ function Library:CreateWindow(options)
                 Transparency=Window.MobileLayout.ButtonTransparency, Position=Window.MobileLayout.OpenButtonPosition,
                 Preset=Window.MobileLayout.PositionPreset, Color=Window.MobileLayout.ButtonColor,
                 CustomPosition=Window.MobileLayout.CustomPosition,
-                EditMode=Window.MobileLayout.EditMode, Enabled=Window.MobileLayout.Enabled
+                EditMode=Window.MobileLayout.EditMode, Enabled=Window.MobileLayout.Enabled,
+                SavedActions=(function()
+                    local actions = {}
+                    for _, state in ipairs(Window.MobileLayout.SavedActions) do
+                        local b = state and state.Button
+                        if b and b.Parent then
+                            table.insert(actions, {
+                                Name = b.Name,
+                                Position = b.Position,
+                                Size = b.Size,
+                                Visible = b.Visible,
+                                Text = b.Text,
+                                Color = b.BackgroundColor3,
+                                Transparency = b.BackgroundTransparency,
+                            })
+                        end
+                    end
+                    return actions
+                end)()
             })
         }
         local ok, encoded = pcall(HttpService.JSONEncode, HttpService, payload)
@@ -1653,6 +1671,32 @@ function Library:CreateWindow(options)
             if mobile.CustomPosition and mobile.Position then Window:SetMobileButtonPosition(mobile.Position) end
             if mobile.EditMode ~= nil then Window:SetMobileEditMode(mobile.EditMode == true) end
             if mobile.Enabled ~= nil then Window:SetMobileLayoutEnabled(mobile.Enabled == true) end
+            table.clear(Window._PendingMobileActions)
+            if type(mobile.SavedActions) == "table" then
+                for _, saved in ipairs(mobile.SavedActions) do
+                    if type(saved) == "table" and saved.Name then
+                        table.insert(Window._PendingMobileActions, saved)
+                    end
+                end
+            end
+            for _, state in ipairs(Window.MobileLayout.SavedActions) do
+                local b = state and state.Button
+                if b and b.Parent then
+                    for _, saved in ipairs(Window._PendingMobileActions) do
+                        if saved.Name == b.Name then
+                            pcall(function()
+                                if saved.Position then b.Position = saved.Position end
+                                if saved.Size then b.Size = saved.Size end
+                                if saved.Text ~= nil then b.Text = saved.Text end
+                                if typeof(saved.Color) == "Color3" then b.BackgroundColor3 = saved.Color end
+                                if saved.Transparency ~= nil then b.BackgroundTransparency = saved.Transparency end
+                                if saved.Visible ~= nil then b.Visible = saved.Visible and UserInputService.TouchEnabled end
+                            end)
+                            break
+                        end
+                    end
+                end
+            end
         end
         Window._LastConfig = tostring(name or "default")
         return true
@@ -2011,7 +2055,9 @@ function Library:CreateWindow(options)
             -- API: Section:AddToggle(...), Section:AddButton(...), etc.
             -- Elements are placed in the tab flow directly below the header.
             local function SectionOptions(options)
-                if type(options) ~= "table" then
+                if type(options) == "string" then
+                    options = { Name = options }
+                elseif type(options) ~= "table" then
                     options = {}
                 else
                     local copy = {}
@@ -2032,7 +2078,12 @@ function Library:CreateWindow(options)
             function Section:AddTextbox(options) return Tab:AddTextbox(SectionOptions(options)) end
             function Section:AddKeybind(options) return Tab:AddKeybind(SectionOptions(options)) end
             function Section:AddColorPicker(options) return Tab:AddColorPicker(SectionOptions(options)) end
-            function Section:AddLabel(options) return Tab:AddLabel(SectionOptions(options)) end
+            function Section:AddLabel(options)
+                if type(options) == "string" then
+                    options = { Name = options }
+                end
+                return Tab:AddLabel(SectionOptions(options))
+            end
             function Section:AddParagraph(title, text)
                 if type(title) == "table" then
                     return Tab:AddParagraph(SectionOptions(title))
@@ -3870,6 +3921,7 @@ function Library:CreateWindow(options)
             Group._Tab = Tab
             Group._ManuallyHidden = false
             Group.Name = options.Name or "Group"
+            Group.Destroyed = false
             Group.Columns = math.max(1, options.Columns or 2)
             Group._Elements = {}
 
@@ -4641,14 +4693,6 @@ function Library:CreateWindow(options)
             if mobileCorner then
                 mobileCorner.CornerRadius = UDim.new(0, mode == "Watermark" and 10 or 15)
             end
-            if mode == "Watermark" and Window.MobileLayout.ButtonText == "N" then
-                Window.MobileLayout.ButtonText = "Nebula"
-                if Window.MobileLayout.ButtonWidth < 92 then
-                    Window.MobileLayout.ButtonWidth = 110
-                    Window.MobileLayout.ButtonHeight = 34
-                    MobileButton.Size = UDim2.fromOffset(110, 34)
-                end
-            end
             Window:SetMobileButtonText(Window.MobileLayout.ButtonText)
         end
         return Window
@@ -4721,6 +4765,25 @@ function Library:CreateWindow(options)
 
         local state = { Button = button, Dragging = false, Start = nil, Position = button.Position, Connections = {} }
         table.insert(Window.MobileLayout.SavedActions, state)
+
+        -- Restore persisted layout for this action when a config was loaded
+        -- before the developer recreated their mobile actions.
+        for i = #Window._PendingMobileActions, 1, -1 do
+            local saved = Window._PendingMobileActions[i]
+            if saved and saved.Name == button.Name then
+                pcall(function()
+                    if saved.Position then button.Position = saved.Position end
+                    if saved.Size then button.Size = saved.Size end
+                    if saved.Text ~= nil then button.Text = saved.Text end
+                    if typeof(saved.Color) == "Color3" then button.BackgroundColor3 = saved.Color end
+                    if saved.Transparency ~= nil then button.BackgroundTransparency = saved.Transparency end
+                    if saved.Visible ~= nil then button.Visible = saved.Visible and UserInputService.TouchEnabled end
+                end)
+                table.remove(Window._PendingMobileActions, i)
+                break
+            end
+        end
+
         table.insert(Window._connections, { Disconnect = function()
             for _, c in ipairs(state.Connections) do pcall(function() c:Disconnect() end) end
             if button and button.Parent then button:Destroy() end
@@ -4954,6 +5017,13 @@ function Library:CreateWindow(options)
         Window.MobileLayout.PositionPreset = "Top Right"
         Window.MobileLayout.CustomPosition = false
         Window.MobileLayout.EditMode = false
+        for i = #Window.MobileLayout.SavedActions, 1, -1 do
+            local state = Window.MobileLayout.SavedActions[i]
+            if state and state.Button and state.Button.Parent then
+                pcall(function() state.Button:Destroy() end)
+            end
+            table.remove(Window.MobileLayout.SavedActions, i)
+        end
         if Window:GetMobileButton() then
             Window:GetMobileButton().BackgroundColor3 = (Library.Themes.Nebula or Window.Theme).Accent
         end
@@ -4992,6 +5062,16 @@ function Library:CreateWindow(options)
     if options.ShowSettings ~= false then
         SettingsTab = Window:AddTab("Settings")
         Window._SettingsTab = SettingsTab
+        SettingsTab:AddSection("Quick Actions")
+        SettingsTab:AddButton({
+            Name = "Center Window",
+            Callback = function() Window:Center() end
+        })
+        SettingsTab:AddButton({
+            Name = "Reset Appearance",
+            Callback = function() Window:ResetAppearance() end
+        })
+
         SettingsTab:AddSection("Appearance")
 
         SettingsTab:AddDropdown({
@@ -5181,10 +5261,6 @@ function Library:CreateWindow(options)
             end
         })
 
-        SettingsTab:AddButton({
-            Name = "Reset Appearance",
-            Callback = function() Window:ResetAppearance() end
-        })
     end
 
     function Window:SetAutoLoadConfig(value)
@@ -5213,7 +5289,36 @@ function Library:CreateWindow(options)
     end
 
     --------------------------------------------------
-    -- v5: PLUGIN LOADING
+    -- v5.5: QUICK UI UTILITIES
+    --------------------------------------------------
+
+    function Window:Center()
+        local viewport = GetViewportSize()
+        local size = Main.AbsoluteSize
+        local x = math.floor((viewport.X - size.X) * 0.5)
+        local y = math.floor((viewport.Y - size.Y) * 0.5)
+        Main.AnchorPoint = Vector2.new(0.5, 0.5)
+        Main.Position = UDim2.fromOffset(math.floor(viewport.X * 0.5), math.floor(viewport.Y * 0.5))
+        Window:ClampToViewport()
+        return Window
+    end
+
+    function Window:GetUISnapshot()
+        local viewport = GetViewportSize()
+        return {
+            Version = Library.Version,
+            Theme = Library.CurrentThemeName or "Nebula",
+            Responsive = Window.Responsive == true,
+            Mobile = Window.MobileLayout.Enabled == true,
+            Viewport = Vector2.new(viewport.X, viewport.Y),
+            Tabs = #Window.Tabs,
+            Elements = #Window.AllElements,
+            Minimized = Window.Minimized == true,
+        }
+    end
+
+    --------------------------------------------------
+    -- v5.5: PLUGIN LOADING
     --------------------------------------------------
 
     Window._LoadedPlugins = {}
