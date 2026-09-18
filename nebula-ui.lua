@@ -95,7 +95,7 @@ end
 
 local Library = {}
 
-Library.Version = "5.4.2"
+Library.Version = "5.4.3"
 Library.Name = "Nebula UI"
 Library.Plugins = {}
 
@@ -744,9 +744,11 @@ function Library:CreateWindow(options)
     local Sidebar = Instance.new("Frame")
     Sidebar.Name = "Sidebar"
     Sidebar.Size = UDim2.new(0, SIDEBAR_WIDTH, 1, 0)
-    Sidebar.BackgroundTransparency = 1
+    Sidebar.BackgroundColor3 = Window.Theme.Background
+    Sidebar.BackgroundTransparency = 0
     Sidebar.ZIndex = 20
     Sidebar.Parent = Body
+    BindTheme(Sidebar, "BackgroundColor3", "Background")
 
     local TabList = Instance.new("ScrollingFrame")
     TabList.Name = "TabList"
@@ -4338,7 +4340,8 @@ function Library:CreateWindow(options)
         Sidebar.Visible = true
         Sidebar.ZIndex = 2
         Sidebar.Size = UDim2.new(0, SIDEBAR_WIDTH, 1, 0)
-        Sidebar.BackgroundTransparency = 1
+        Sidebar.BackgroundTransparency = 0
+        Sidebar.BackgroundColor3 = Window.Theme.Background
 
         Content.Position = UDim2.fromOffset(SIDEBAR_WIDTH, 0)
         Content.Size = UDim2.new(1, -SIDEBAR_WIDTH, 1, 0)
@@ -4858,7 +4861,7 @@ function Library:CreateWindow(options)
 
     local function ApplyTransparency()
         local amount = math.clamp(tonumber(Window.Appearance.Transparency) or 0, 0, 0.65)
-        local targets = { Main, Header, Content }
+        local targets = { Main, Header, Sidebar, Content }
         for _, instance in ipairs(targets) do
             if instance and instance.Parent then
                 pcall(function() instance.BackgroundTransparency = amount end)
