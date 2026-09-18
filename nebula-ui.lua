@@ -39,6 +39,7 @@ local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
+local GuiService = game:GetService("GuiService")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -78,7 +79,7 @@ end
 
 local Library = {}
 
-Library.Version = "5.0.0"
+Library.Version = "5.1.0"
 Library.Name = "Nebula UI"
 Library.Plugins = {}
 
@@ -427,6 +428,14 @@ function Library:CreateWindow(options)
 
     Window.Destroyed = false
     Window.Minimized = false
+    Window.MobileLayout = {
+        Enabled = options.MobileLayout ~= false,
+        EditMode = false,
+        ButtonSize = tonumber(options.MobileButtonSize) or 52,
+        ButtonTransparency = tonumber(options.MobileButtonTransparency) or 0.08,
+        OpenButtonPosition = options.MobileButtonPosition or UDim2.new(1, -72, 1, -96),
+        SavedActions = {},
+    }
     Window.Appearance = {
         CornerRadius = tonumber(options.CornerRadius) or 12,
         UIScale = tonumber(options.UIScale) or 1,
@@ -753,6 +762,35 @@ function Library:CreateWindow(options)
     -- DRAGGING
     --------------------------------------------------
 
+    local function GetSafeViewport()
+        local camera = Workspace.CurrentCamera
+        local vp = (camera and camera.ViewportSize) or Vector2.new(1280, 720)
+        local inset = GuiService:GetGuiInset()
+        return vp, inset
+    end
+
+    local function GetCurrentViewportSize()
+        local camera = Workspace.CurrentCamera
+        return (camera and camera.ViewportSize) or Vector2.new(1280, 720)
+    end
+
+    function Window:ClampToViewport()
+        if not Main or not Main.Parent then return end
+        local vp = GetSafeViewport()
+        local abs = Main.AbsoluteSize
+        local margin = 8
+        local halfW = math.max(1, abs.X * 0.5)
+        local halfH = math.max(1, abs.Y * 0.5)
+        local minX = margin + halfW
+        local maxX = math.max(minX, vp.X - margin - halfW)
+        local minY = margin + halfH
+        local maxY = math.max(minY, vp.Y - margin - halfH)
+        local pos = Main.AbsolutePosition + abs * 0.5
+        local x = math.clamp(pos.X, minX, maxX)
+        local y = math.clamp(pos.Y, minY, maxY)
+        Main.Position = UDim2.fromOffset(x, y)
+    end
+
     local dragging = false
     local dragStart
     local startPosition
@@ -765,6 +803,7 @@ function Library:CreateWindow(options)
             startPosition.Y.Scale,
             startPosition.Y.Offset + delta.Y
         )
+        Window:ClampToViewport()
     end
 
     Track(Header.InputBegan:Connect(function(input)
@@ -3688,6 +3727,39 @@ function Library:CreateWindow(options)
         end)
     end))
 
+    MobileButton.Position = Window.MobileLayout.OpenButtonPosition
+    MobileButton:SetAttribute("NebulaMobileAction", "Open")
+
+    local mobileDragging = false
+    local mobileDragStart = nil
+    local mobileStartPos = nil
+    Track(MobileButton.InputBegan:Connect(function(input)
+        if not Window.MobileLayout.EditMode then return end
+        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            mobileDragging = true
+            mobileDragStart = input.Position
+            mobileStartPos = MobileButton.Position
+            local ended
+            ended = input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    mobileDragging = false
+                    if ended then ended:Disconnect() end
+                end
+            end)
+        end
+    end))
+    Track(UserInputService.InputChanged:Connect(function(input)
+        if not mobileDragging then return end
+        if input.UserInputType ~= Enum.UserInputType.Touch and input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+        local d = input.Position - mobileDragStart
+        MobileButton.Position = mobileStartPos + UDim2.fromOffset(d.X, d.Y)
+        local vp = GetCurrentViewportSize()
+        local size = MobileButton.AbsoluteSize
+        local x = math.clamp(MobileButton.AbsolutePosition.X, 4, math.max(4, vp.X-size.X-4))
+        local y = math.clamp(MobileButton.AbsolutePosition.Y, 4, math.max(4, vp.Y-size.Y-4))
+        MobileButton.Position = UDim2.fromOffset(x, y)
+    end))
+
     -- gentle pulse
     task.spawn(function()
         while not Window.Destroyed and not mobilePulseCancelled and MobileButton and MobileButton.Parent do
@@ -3784,9 +3856,12 @@ function Library:CreateWindow(options)
         if not Window.Responsive then return end
 
         local viewport = GetViewportSize()
-        local isMobile = viewport.X < Window.Breakpoints.Mobile
+        local display = GuiService.ViewportDisplaySize
+        local isMobile = UserInputService.TouchEnabled or viewport.X < Window.Breakpoints.Mobile or display == Enum.DisplaySize.Small
 
         if isMobile == Window.IsMobile then
+            if isMobile then ApplyMobileLayout() else ApplyDesktopLayout() end
+            Window:ClampMobileButtons()
             return
         end
 
@@ -3801,6 +3876,7 @@ function Library:CreateWindow(options)
         for _, group in ipairs(Window._Groups) do
             group:_Relayout(isMobile)
         end
+        Window:ClampMobileButtons()
     end
 
     if Window.Responsive then
@@ -3877,6 +3953,118 @@ function Library:CreateWindow(options)
     function Window:SetSubtitle(subtitle)
         Window.Subtitle = tostring(subtitle)
         SubtitleLabel.Text = Window.Subtitle
+    end
+
+    function Window:SetMobileEditMode(value)
+        Window.MobileLayout.EditMode = value == true
+        if MobileButton then
+            MobileButton.BackgroundTransparency = Window.MobileLayout.EditMode and 0 or Window.MobileLayout.ButtonTransparency
+        end
+        return Window
+    end
+
+    function Window:SetMobileButtonPosition(position)
+        if MobileButton and typeof(position) == "UDim2" then
+            MobileButton.Position = position
+            Window.MobileLayout.OpenButtonPosition = position
+        end
+        return Window
+    end
+
+    function Window:SetMobileButtonSize(size)
+        local n = math.clamp(tonumber(size) or 52, 36, 110)
+        Window.MobileLayout.ButtonSize = n
+        if MobileButton then MobileButton.Size = UDim2.fromOffset(n, n) end
+        return Window
+    end
+
+    function Window:GetMobileButton()
+        return MobileButton
+    end
+
+    function Window:AddMobileButton(options)
+        options = options or {}
+        local button = Instance.new("TextButton")
+        button.Name = "MobileAction_" .. tostring(options.Name or "Action")
+        button.Size = options.Size or UDim2.fromOffset(72, 48)
+        button.Position = options.Position or UDim2.new(1, -88, 1, -160)
+        button.AnchorPoint = options.AnchorPoint or Vector2.new(0, 0)
+        button.BackgroundColor3 = options.Color or Window.Theme.Accent
+        button.BackgroundTransparency = tonumber(options.Transparency) or 0.08
+        button.BorderSizePixel = 0
+        button.Text = tostring(options.Text or options.Name or "ACTION")
+        button.TextColor3 = Color3.new(1,1,1)
+        button.TextSize = tonumber(options.TextSize) or 14
+        button.Font = Enum.Font.GothamBold
+        button.AutoButtonColor = true
+        button.Visible = UserInputService.TouchEnabled and options.Enabled ~= false
+        button.ZIndex = 210
+        button.Parent = ScreenGui
+        Corner(button, 12, true)
+        BindTheme(button, "BackgroundColor3", "Accent")
+
+        local state = { Button = button, Dragging = false, Start = nil, Position = button.Position, Connections = {} }
+        table.insert(Window.MobileLayout.SavedActions, state)
+        table.insert(Window._connections, { Disconnect = function()
+            for _, c in ipairs(state.Connections) do pcall(function() c:Disconnect() end) end
+            if button and button.Parent then button:Destroy() end
+        end })
+
+        local function track(c) table.insert(state.Connections, c); return c end
+        track(button.Activated:Connect(function()
+            if Window.MobileLayout.EditMode then return end
+            if type(options.Callback) == "function" then task.spawn(options.Callback) end
+        end))
+        track(button.InputBegan:Connect(function(input)
+            if not Window.MobileLayout.EditMode then return end
+            if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+                state.Dragging = true
+                state.Start = input.Position
+                state.Position = button.Position
+                local e
+                e = input.Changed:Connect(function()
+                    if input.UserInputState == Enum.UserInputState.End then
+                        state.Dragging = false
+                        if e then e:Disconnect() end
+                    end
+                end)
+            end
+        end))
+        track(UserInputService.InputChanged:Connect(function(input)
+            if not state.Dragging then return end
+            if input.UserInputType ~= Enum.UserInputType.Touch and input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+            local d = input.Position - state.Start
+            button.Position = state.Position + UDim2.fromOffset(d.X, d.Y)
+            local vp = GetCurrentViewportSize(); local size = button.AbsoluteSize
+            button.Position = UDim2.fromOffset(math.clamp(button.AbsolutePosition.X, 4, math.max(4,vp.X-size.X-4)), math.clamp(button.AbsolutePosition.Y, 4, math.max(4,vp.Y-size.Y-4)))
+        end))
+        return button
+    end
+
+    function Window:ClampMobileButtons()
+        local vp = GetCurrentViewportSize()
+        if MobileButton then
+            local size = MobileButton.AbsoluteSize
+            MobileButton.Position = UDim2.fromOffset(math.clamp(MobileButton.AbsolutePosition.X,4,math.max(4,vp.X-size.X-4)), math.clamp(MobileButton.AbsolutePosition.Y,4,math.max(4,vp.Y-size.Y-4)))
+        end
+        for _, state in ipairs(Window.MobileLayout.SavedActions) do
+            local b = state.Button
+            if b and b.Parent then
+                local size=b.AbsoluteSize
+                b.Position=UDim2.fromOffset(math.clamp(b.AbsolutePosition.X,4,math.max(4,vp.X-size.X-4)), math.clamp(b.AbsolutePosition.Y,4,math.max(4,vp.Y-size.Y-4)))
+            end
+        end
+        Window:ClampToViewport()
+    end
+
+    function Window:SetMobileActionVisible(name, visible)
+        for _, state in ipairs(Window.MobileLayout.SavedActions) do
+            if state.Button and state.Button.Name == "MobileAction_" .. tostring(name) then
+                state.Button.Visible = visible == true and UserInputService.TouchEnabled
+                return true
+            end
+        end
+        return false
     end
 
     function Window:SetMobileButtonVisible(value)
