@@ -95,7 +95,7 @@ end
 
 local Library = {}
 
-Library.Version = "5.4.1"
+Library.Version = "5.4.2"
 Library.Name = "Nebula UI"
 Library.Plugins = {}
 
@@ -745,7 +745,7 @@ function Library:CreateWindow(options)
     Sidebar.Name = "Sidebar"
     Sidebar.Size = UDim2.new(0, SIDEBAR_WIDTH, 1, 0)
     Sidebar.BackgroundTransparency = 1
-    Sidebar.ZIndex = 2
+    Sidebar.ZIndex = 20
     Sidebar.Parent = Body
 
     local TabList = Instance.new("ScrollingFrame")
@@ -758,6 +758,8 @@ function Library:CreateWindow(options)
     TabList.ScrollBarImageTransparency = 0.4
     TabList.AutomaticCanvasSize = Enum.AutomaticSize.Y
     TabList.CanvasSize = UDim2.new()
+    TabList.ZIndex = 21
+    TabList.Visible = true
     TabList.Parent = Sidebar
 
     BindTheme(TabList, "ScrollBarImageColor3", "Accent")
@@ -1691,45 +1693,92 @@ function Library:CreateWindow(options)
         -- a stale filtered state.
         Window.ActiveTab = tab
 
-        if SearchBox and SearchBox.Text ~= "" then
-            SearchBox.Text = ""
-        else
-            tab:_Search("")
-        end
-
+        -- v5.4.2: selection must never depend on an animation succeeding.
+        -- The previous version could leave a completely blank window when a
+        -- Tween/GUI property operation failed. Visibility is now committed
+        -- first, then cosmetic animation is best-effort.
         for _, other in ipairs(Window.Tabs) do
+            local isActive = other == tab
+
             if other.Content then
-                other.Content.Visible = other == tab
+                other.Content.Visible = isActive
+                other.Content.Active = isActive
+                if isActive then
+                    other.Content.CanvasPosition = Vector2.new(0, 0)
+                end
             end
 
             if other.Button then
-                local isActive = other == tab
+                other.Button.Visible = true
+                other.Button.Active = true
 
-                Tween(other.Button, {
-                    BackgroundColor3 = isActive and Window.Theme.Tertiary or Color3.fromRGB(0, 0, 0),
-                    BackgroundTransparency = isActive and 0 or 1
-                }, 0.18)
+                pcall(function()
+                    other.Button.ZIndex = 5
+                    other.Button.BackgroundColor3 = isActive and Window.Theme.Tertiary or Window.Theme.Background
+                    other.Button.BackgroundTransparency = isActive and 0 or 1
+                end)
 
                 if other.ButtonText then
-                    Tween(other.ButtonText, {
-                        TextColor3 = isActive and Window.Theme.Text or Window.Theme.SubText
-                    }, 0.18)
+                    pcall(function()
+                        other.ButtonText.Visible = true
+                        other.ButtonText.ZIndex = 6
+                        other.ButtonText.TextTransparency = 0
+                        other.ButtonText.TextColor3 = isActive and Window.Theme.Text or Window.Theme.SubText
+                    end)
                 end
 
                 if other.Indicator then
-                    Tween(other.Indicator, {
-                        BackgroundTransparency = isActive and 0 or 1,
-                        Size = isActive and UDim2.new(0, 3, 0, 18) or UDim2.new(0, 3, 0, 8)
-                    }, 0.22, Enum.EasingStyle.Back)
+                    pcall(function()
+                        other.Indicator.Visible = true
+                        other.Indicator.ZIndex = 6
+                        other.Indicator.BackgroundTransparency = isActive and 0 or 1
+                        other.Indicator.Size = isActive and UDim2.new(0, 3, 0, 18) or UDim2.new(0, 3, 0, 8)
+                    end)
                 end
 
                 if other.ButtonStroke then
-                    Tween(other.ButtonStroke, { Transparency = isActive and 0.55 or 1 }, 0.18)
+                    pcall(function()
+                        other.ButtonStroke.Transparency = isActive and 0.55 or 1
+                    end)
+                end
+
+                -- Animation is cosmetic only. Never allow it to break tab
+                -- selection or initialization.
+                pcall(function()
+                    Tween(other.Button, {
+                        BackgroundColor3 = isActive and Window.Theme.Tertiary or Window.Theme.Background,
+                        BackgroundTransparency = isActive and 0 or 1
+                    }, 0.18)
+                end)
+                if other.ButtonText then
+                    pcall(function()
+                        Tween(other.ButtonText, {
+                            TextColor3 = isActive and Window.Theme.Text or Window.Theme.SubText
+                        }, 0.18)
+                    end)
+                end
+                if other.Indicator then
+                    pcall(function()
+                        Tween(other.Indicator, {
+                            BackgroundTransparency = isActive and 0 or 1,
+                            Size = isActive and UDim2.new(0, 3, 0, 18) or UDim2.new(0, 3, 0, 8)
+                        }, 0.22, Enum.EasingStyle.Back)
+                    end)
+                end
+                if other.ButtonStroke then
+                    pcall(function()
+                        Tween(other.ButtonStroke, { Transparency = isActive and 0.55 or 1 }, 0.18)
+                    end)
                 end
             end
         end
 
-        CurrentTabLabel.Text = tab.Name
+        -- Clear search only after the new tab is already visible.
+        if SearchBox and SearchBox.Text ~= "" then
+            pcall(function() SearchBox.Text = "" end)
+        end
+        pcall(function() tab:_Search("") end)
+        pcall(function() CurrentTabLabel.Text = tab.Name end)
 
         -- v4: on mobile, picking a tab also closes the sidebar overlay
         if Window.IsMobile and Sidebar.Visible then
@@ -1770,6 +1819,9 @@ function Library:CreateWindow(options)
         Button.BorderSizePixel = 0
         Button.AutoButtonColor = false
         Button.Text = ""
+        Button.ZIndex = 22
+        Button.Visible = true
+        Button.Active = true
         Button.Parent = TabList
 
         Corner(Button, 8)
@@ -1814,6 +1866,8 @@ function Library:CreateWindow(options)
         buttonText.Position = UDim2.fromOffset(hasImageIcon and 36 or 13, 0)
         buttonText.Size = UDim2.new(1, -(hasImageIcon and 43 or 20), 1, 0)
         buttonText.TextColor3 = Window.Theme.SubText
+        buttonText.Visible = true
+        buttonText.ZIndex = 23
 
         Tab.Button = Button
         Tab.ButtonStroke = buttonStroke
@@ -4361,7 +4415,11 @@ function Library:CreateWindow(options)
 
         if isMobile == Window.IsMobile then
             if isMobile then ApplyMobileLayout() else ApplyDesktopLayout() end
-            Window:ClampMobileButtons()
+            -- ClampMobileButtons is declared later in CreateWindow.
+            -- Never abort initialization by calling the method before it exists.
+            if Window.ClampMobileButtons then
+                Window:ClampMobileButtons()
+            end
             return
         end
 
@@ -4376,7 +4434,9 @@ function Library:CreateWindow(options)
         for _, group in ipairs(Window._Groups) do
             group:_Relayout(isMobile)
         end
-        Window:ClampMobileButtons()
+        if Window.ClampMobileButtons then
+            Window:ClampMobileButtons()
+        end
     end
 
     if Window.Responsive then
@@ -4432,6 +4492,44 @@ function Library:CreateWindow(options)
 
     UpdateMobileButtonVisibility()
 
+    -- v5.4.2 navigation repair pass. Keep the actual tab controls alive even
+    -- when responsive sizing changes visibility/stacking. Mobile still uses
+    -- the header menu to open the sidebar; desktop always shows the sidebar.
+    local function RepairNavigation()
+        pcall(function()
+            TabList.Visible = true
+            TabList.Active = true
+            TabList.ZIndex = 21
+            Sidebar.ZIndex = 20
+            if Window.IsMobile then
+                Sidebar.Visible = false
+            else
+                Sidebar.Visible = true
+            end
+        end)
+        for _, t in ipairs(Window.Tabs) do
+            if t.Button then
+                pcall(function()
+                    t.Button.Visible = true
+                    t.Button.Active = true
+                    t.Button.ZIndex = 22
+                end)
+            end
+            if t.ButtonText then
+                pcall(function()
+                    t.ButtonText.Visible = true
+                    t.ButtonText.ZIndex = 23
+                    t.ButtonText.TextTransparency = 0
+                end)
+            end
+        end
+        if Window.ActiveTab then
+            pcall(function() Window.ActiveTab.Content.Visible = true end)
+        end
+    end
+
+    RepairNavigation()
+
     function Window:SetSize(size)
         if typeof(size) ~= "UDim2" then return Window end
         Window.Size = size
@@ -4444,6 +4542,7 @@ function Library:CreateWindow(options)
         if Window.Responsive then
             UpdateResponsive()
         end
+        RepairNavigation()
         Window:ClampToViewport()
         return Window
     end
@@ -4707,6 +4806,10 @@ function Library:CreateWindow(options)
     end
 
     --------------------------------------------------
+    -- The initial responsive pass occurs before ClampMobileButtons is declared.
+    -- Run the first safe clamp now that the method exists.
+    pcall(function() Window:ClampMobileButtons() end)
+
     -- v5: APPEARANCE / MOTION SYSTEM
     --------------------------------------------------
 
@@ -5337,6 +5440,8 @@ function Library:CreateWindow(options)
     elseif Window.Tabs[1] then
         Window:SelectTab(Window.Tabs[1])
     end
+
+    RepairNavigation()
 
     --------------------------------------------------
     -- RETURN
