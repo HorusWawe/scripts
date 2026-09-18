@@ -1,5 +1,5 @@
 --[[
-    Nebula UI v4
+    Nebula UI v4.2
     Universal Roblox/Luau UI Framework
     Built on top of Nebula UI v3 - visuals unchanged, architecture layered on top.
 
@@ -78,7 +78,7 @@ end
 
 local Library = {}
 
-Library.Version = "4.1.0"
+Library.Version = "4.2.0"
 Library.Name = "Nebula UI"
 Library.Plugins = {}
 
@@ -381,7 +381,7 @@ function Library:CreateWindow(options)
     Window.Title = options.Title or options.Name or "Nebula UI"
     Window.Subtitle = options.Subtitle or "Universal Interface"
     Window.Size = options.Size or UDim2.fromOffset(720, 500)
-    Window.ToggleKey = options.ToggleKey -- Enum.KeyCode or nil
+    Window.ToggleKey = options.ToggleKey or Enum.KeyCode.RightControl -- default: Right Ctrl
 
     Window.Theme = self.CurrentTheme
 
@@ -415,7 +415,8 @@ function Library:CreateWindow(options)
         return connection
     end
 
-    Window.Track = function(_, connection)
+    Window.Track = function(a, b)
+        local connection = b or a
         return Track(connection)
     end
 
@@ -841,6 +842,8 @@ function Library:CreateWindow(options)
 
         Corner(notification, 10)
         local notifStroke = Stroke(notification, Window.Theme.Border, 0.4)
+        BindTheme(notification, "BackgroundColor3", "Secondary")
+        BindTheme(notifStroke, "Color", "Border")
 
         -- accent bar
         local accentBar = Instance.new("Frame")
@@ -852,12 +855,14 @@ function Library:CreateWindow(options)
         accentBar.Parent = notification
 
         Corner(accentBar, 3)
+        BindTheme(accentBar, "BackgroundColor3", typeKey)
 
         local title = CreateText(notification, data.Title or "Nebula", 13, Enum.Font.GothamBold)
         title.Position = UDim2.fromOffset(14, 8)
         title.Size = UDim2.new(1, -28, 0, 20)
         title.TextColor3 = Window.Theme.Text
         title.ZIndex = 102
+        BindTheme(title, "TextColor3", "Text")
 
         local text = CreateText(notification, data.Content or "", 11, Enum.Font.Gotham)
         text.Position = UDim2.fromOffset(14, 30)
@@ -865,6 +870,7 @@ function Library:CreateWindow(options)
         text.TextColor3 = Window.Theme.SubText
         text.TextWrapped = true
         text.ZIndex = 102
+        BindTheme(text, "TextColor3", "SubText")
 
         -- slide-in animation
         notification.Position = UDim2.new(1, 40, 0, 0)
@@ -1054,6 +1060,32 @@ function Library:CreateWindow(options)
             Window.ElementsByID[Element.ID] = Element
         end
 
+        -- StateKey is now supported consistently by every settable element.
+        if options.StateKey and Element.Get and Element.Set then
+            local stateKey = tostring(options.StateKey)
+            local ok, current = pcall(Element.Get, Element)
+            if ok then
+                Window.State:Set(stateKey, current)
+            end
+
+            Element._StateConnection = Window.State:Bind(stateKey, function(value)
+                if Element.Destroyed then return end
+                local okGet, currentValue = pcall(Element.Get, Element)
+                if okGet and currentValue ~= value then
+                    pcall(Element.Set, Element, value)
+                end
+            end)
+
+            Track({
+                Disconnect = function()
+                    if Element._StateConnection then
+                        Element._StateConnection:Disconnect()
+                        Element._StateConnection = nil
+                    end
+                end
+            })
+        end
+
         return Element
     end
 
@@ -1068,10 +1100,19 @@ function Library:CreateWindow(options)
     function Window:SetValue(id, value)
         local element = Window.ElementsByID[id]
 
-        if element and element.Set then
-            element:Set(value)
-        else
+        if not element or not element.Set then
             warn("[Nebula UI] SetValue: no settable element with ID", id)
+            return nil
+        end
+
+        if element._ValueType == "MultiDropdown" and type(value) ~= "table" then
+            warn("[Nebula UI] SetValue: MultiDropdown expects a table for ID", id)
+            return element
+        end
+
+        local ok, err = pcall(element.Set, element, value)
+        if not ok then
+            warn("[Nebula UI] SetValue failed for ID", id, err)
         end
 
         return element
@@ -1123,6 +1164,10 @@ function Library:CreateWindow(options)
     --------------------------------------------------
 
     function Window:SelectTab(tab)
+        if SearchBox then
+            SearchBox.Text = ""
+        end
+
         for _, other in ipairs(Window.Tabs) do
             if other.Content then
                 other.Content.Visible = other == tab
@@ -1261,10 +1306,34 @@ function Library:CreateWindow(options)
             query = string.lower(query or "")
 
             for _, element in ipairs(Tab.Elements) do
-                if element.Root then
-                    local name = string.lower(element.Name or "")
-                    local visible = query == "" or string.find(name, query, 1, true) ~= nil
-                    element.Root.Visible = visible
+                if element.Root and not element._Group then
+                    local name = string.lower(tostring(element.Name or ""))
+                    local match = query == "" or string.find(name, query, 1, true) ~= nil
+                    element.Root.Visible = match
+                end
+            end
+
+            for _, group in ipairs(Window._Groups) do
+                if group._Elements then
+                    local belongsToTab = false
+                    for _, element in ipairs(group._Elements) do
+                        if element and element._Group == group then
+                            belongsToTab = true
+                            break
+                        end
+                    end
+                    if belongsToTab then
+                        group:_Search(query)
+                    end
+                end
+            end
+
+            if Tab._Sections then
+                for _, section in ipairs(Tab._Sections) do
+                    if section.Root then
+                        local name = string.lower(tostring(section.Name or ""))
+                        section.Root.Visible = query == "" or string.find(name, query, 1, true) ~= nil
+                    end
                 end
             end
         end
@@ -1272,6 +1341,8 @@ function Library:CreateWindow(options)
         --------------------------------------------------
         -- SECTION
         --------------------------------------------------
+
+        Tab._Sections = Tab._Sections or {}
 
         function Tab:AddSection(title)
             local holder = Instance.new("Frame")
@@ -1295,6 +1366,9 @@ function Library:CreateWindow(options)
             label.Size = UDim2.new(1, -12, 1, 0)
             label.TextColor3 = Window.Theme.SubText
             BindTheme(label, "TextColor3", "SubText")
+
+            local Section = { Root = holder, Name = tostring(title or "SECTION") }
+            table.insert(Tab._Sections, Section)
 
             return holder
         end
@@ -1324,11 +1398,15 @@ function Library:CreateWindow(options)
 
             local Element = {
                 Root = holder,
-                Name = "Label"
+                Name = options.Name or "Label"
             }
 
-            function Element:Set(_, value)
-                label.Text = tostring(value)
+            function Element:Set(value)
+                label.Text = tostring(value or "")
+            end
+
+            function Element:Get()
+                return label.Text
             end
 
             return Window:_Finalize(Tab, Element, options, label)
@@ -1387,9 +1465,24 @@ function Library:CreateWindow(options)
                 Name = options.Title or "Paragraph"
             }
 
-            function Element:Set(_, newTitle, newText)
-                titleLabel.Text = tostring(newTitle)
-                textLabel.Text = tostring(newText)
+            function Element:Set(value)
+                if type(value) == "table" then
+                    if value.Title ~= nil then
+                        titleLabel.Text = tostring(value.Title)
+                    end
+                    if value.Text ~= nil then
+                        textLabel.Text = tostring(value.Text)
+                    end
+                else
+                    titleLabel.Text = tostring(value or "")
+                end
+            end
+
+            function Element:Get()
+                return {
+                    Title = titleLabel.Text,
+                    Text = textLabel.Text
+                }
             end
 
             return Window:_Finalize(Tab, Element, options, titleLabel)
@@ -1576,24 +1669,6 @@ function Library:CreateWindow(options)
 
             Element.Root = holder
 
-            if options.StateKey then
-                Window.State:Set(options.StateKey, Element.Value)
-
-                Element._StateConnection = Window.State:Bind(options.StateKey, function(value)
-                    if Element.Value ~= value then
-                        Element:Set(value)
-                    end
-                end)
-
-                Track({
-                    Disconnect = function()
-                        if Element._StateConnection then
-                            Element._StateConnection:Disconnect()
-                        end
-                    end
-                })
-            end
-
             return Window:_Finalize(Tab, Element, options, title)
         end
 
@@ -1758,7 +1833,7 @@ function Library:CreateWindow(options)
                 end
             end))
 
-            TrackPicker(UserInputService.InputChanged:Connect(function(i)
+            Track(UserInputService.InputChanged:Connect(function(i)
                 if draggingSlider then
                     if i.UserInputType == Enum.UserInputType.MouseMovement
                     or i.UserInputType == Enum.UserInputType.Touch then
@@ -1767,7 +1842,7 @@ function Library:CreateWindow(options)
                 end
             end))
 
-            TrackPicker(UserInputService.InputEnded:Connect(function(i)
+            Track(UserInputService.InputEnded:Connect(function(i)
                 if i.UserInputType == Enum.UserInputType.MouseButton1
                 or i.UserInputType == Enum.UserInputType.Touch then
                     if draggingSlider then
@@ -1807,6 +1882,7 @@ function Library:CreateWindow(options)
             Element.Name = options.Name or "Dropdown"
             Element.Values = options.Values or {}
             Element.Value = options.Default or Element.Values[1]
+            Element._ValueType = "Dropdown"
             Element.IsOpen = false
 
             local overlay
@@ -1975,7 +2051,9 @@ function Library:CreateWindow(options)
                 end
 
                 task.delay(0.2, function()
-                    list.Visible = false
+                    if list and list.Parent then
+                        list.Visible = false
+                    end
                 end)
             end
 
@@ -1988,6 +2066,15 @@ function Library:CreateWindow(options)
             end))
 
             Rebuild()
+
+            Element._Cleanup = function()
+                if Element.IsOpen then
+                    Element:Close()
+                elseif overlay then
+                    pcall(function() overlay:Destroy() end)
+                    overlay = nil
+                end
+            end
 
             Element.Root = holder
             return Window:_Finalize(Tab, Element, options, title)
@@ -2004,6 +2091,7 @@ function Library:CreateWindow(options)
             Element.Name = options.Name or "Multi Dropdown"
             Element.Values = options.Values or {}
             Element.Selected = {}
+            Element._ValueType = "MultiDropdown"
 
             for _, value in ipairs(options.Default or {}) do
                 Element.Selected[value] = true
@@ -2169,6 +2257,11 @@ function Library:CreateWindow(options)
             end
 
             function Element:Set(values)
+                if type(values) ~= "table" then
+                    warn("[Nebula UI] MultiDropdown:Set expects a table, got " .. typeof(values))
+                    return
+                end
+
                 table.clear(Element.Selected)
 
                 for _, value in ipairs(values or {}) do
@@ -2216,7 +2309,9 @@ function Library:CreateWindow(options)
                 end
 
                 task.delay(0.2, function()
-                    list.Visible = false
+                    if list and list.Parent then
+                        list.Visible = false
+                    end
                 end)
             end
 
@@ -2230,6 +2325,15 @@ function Library:CreateWindow(options)
 
             UpdateText()
             Rebuild()
+
+            Element._Cleanup = function()
+                if isOpen then
+                    CloseMenu()
+                elseif overlay then
+                    pcall(function() overlay:Destroy() end)
+                    overlay = nil
+                end
+            end
 
             Element.Root = holder
             return Window:_Finalize(Tab, Element, options, title)
@@ -2374,6 +2478,10 @@ function Library:CreateWindow(options)
             end))
 
             Track(UserInputService.InputBegan:Connect(function(input, processed)
+                if processed then
+                    return
+                end
+
                 if listening then
                     if input.UserInputType == Enum.UserInputType.Keyboard then
                         if input.KeyCode == Enum.KeyCode.Escape then
@@ -2399,7 +2507,7 @@ function Library:CreateWindow(options)
                     return
                 end
 
-                if processed or Element.Disabled then
+                if Element.Disabled then
                     return
                 end
 
@@ -2525,7 +2633,8 @@ function Library:CreateWindow(options)
             end
 
             local function ClosePicker()
-                if not pickerOpen then
+                if not pickerOpen and not panel and not overlay then
+                    DisconnectPickerConnections()
                     return
                 end
 
@@ -2585,7 +2694,7 @@ function Library:CreateWindow(options)
                 overlay.ZIndex = 200
                 overlay.Parent = ScreenGui
 
-                overlay.MouseButton1Click:Connect(ClosePicker)
+                TrackPicker(overlay.MouseButton1Click:Connect(ClosePicker))
 
                 panel = Instance.new("CanvasGroup")
                 panel.Size = UDim2.fromOffset(250, 262)
@@ -2773,7 +2882,7 @@ function Library:CreateWindow(options)
                 Corner(doneButton, 8)
                 BindTheme(doneButton, "BackgroundColor3", "Accent")
 
-                doneButton.MouseButton1Click:Connect(ClosePicker)
+                TrackPicker(doneButton.MouseButton1Click:Connect(ClosePicker))
 
                 -- interactions
                 local draggingSV = false
@@ -2836,7 +2945,7 @@ function Library:CreateWindow(options)
                     end
                 end))
 
-                hexBox.FocusLost:Connect(function()
+                TrackPicker(hexBox.FocusLost:Connect(function()
                     local text = string.gsub(hexBox.Text, "#", "")
                     local r = tonumber(string.sub(text, 1, 2), 16)
                     local g = tonumber(string.sub(text, 3, 4), 16)
@@ -2859,7 +2968,7 @@ function Library:CreateWindow(options)
                     else
                         hexBox.Text = ToHex(Element.Value)
                     end
-                end)
+                end))
 
                 panel.BackgroundTransparency = 1
                 panel.Size = UDim2.fromOffset(0, 0)
@@ -2932,6 +3041,25 @@ function Library:CreateWindow(options)
             Padding(frame, 10, 10, 10, 10)
 
             Container.Root = frame
+            Container.Destroyed = false
+
+            function Container:SetVisible(visible)
+                if frame then
+                    frame.Visible = visible ~= false
+                end
+            end
+
+            function Container:SetDisabled(disabled)
+                local value = disabled == true
+                if frame then
+                    frame.Active = not value
+                    for _, object in ipairs(frame:GetDescendants()) do
+                        if object:IsA("GuiButton") then
+                            object.Active = not value
+                        end
+                    end
+                end
+            end
 
             function Container:AddLabel(text)
                 local label = CreateText(frame, text, 11, Enum.Font.Gotham)
@@ -2942,8 +3070,11 @@ function Library:CreateWindow(options)
             end
 
             function Container:Destroy()
+                if Container.Destroyed then return end
+                Container.Destroyed = true
                 if frame then
                     frame:Destroy()
+                    frame = nil
                 end
             end
 
@@ -3029,6 +3160,7 @@ function Library:CreateWindow(options)
                     elOptions._Parent = GetTargetParent()
 
                     local element = addFn(Tab, elOptions)
+                    element._Group = Group
                     table.insert(Group._Elements, element)
                     return element
                 end
@@ -3077,6 +3209,48 @@ function Library:CreateWindow(options)
                 end
             end
 
+            function Group:SetVisible(visible)
+                holder.Visible = visible ~= false
+            end
+
+            function Group:Destroy()
+                if Group.Destroyed then return end
+                Group.Destroyed = true
+                for _, element in ipairs(Group._Elements) do
+                    if element and element.Destroy then
+                        pcall(element.Destroy, element)
+                    end
+                end
+                Group._Elements = {}
+                for i = #Window._Groups, 1, -1 do
+                    if Window._Groups[i] == Group then
+                        table.remove(Window._Groups, i)
+                        break
+                    end
+                end
+                if holder then
+                    holder:Destroy()
+                end
+            end
+
+            function Group:_Search(query)
+                query = string.lower(query or "")
+                local hasMatch = query == ""
+
+                for _, element in ipairs(Group._Elements) do
+                    if element and element.Root then
+                        local name = string.lower(tostring(element.Name or ""))
+                        local match = query == "" or string.find(name, query, 1, true) ~= nil
+                        element.Root.Visible = match
+                        if match then
+                            hasMatch = true
+                        end
+                    end
+                end
+
+                holder.Visible = hasMatch
+            end
+
             table.insert(Window._Groups, Group)
 
             return Group
@@ -3098,10 +3272,8 @@ function Library:CreateWindow(options)
     --------------------------------------------------
 
     Track(SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
-        local query = string.lower(SearchBox.Text)
-
-        for _, tab in ipairs(Window.Tabs) do
-            tab:_Search(query)
+        if Window.ActiveTab then
+            Window.ActiveTab:_Search(SearchBox.Text)
         end
     end))
 
@@ -3143,11 +3315,29 @@ function Library:CreateWindow(options)
     end))
 
     --------------------------------------------------
-    -- CLOSE
+    -- CLOSE / HIDE
     --------------------------------------------------
 
+    local MobileButton
+
+    local function GetToggleKeyText()
+        if Window.ToggleKey == Enum.KeyCode.RightControl then
+            return "Ctrl + Right"
+        end
+        if Window.ToggleKey == Enum.KeyCode.LeftControl then
+            return "Ctrl + Left"
+        end
+        return Window.ToggleKey and Window.ToggleKey.Name or "your keybind"
+    end
+
     Track(Close.MouseButton1Click:Connect(function()
-        Window:Unload()
+        Window:Hide()
+        Window:Notify({
+            Title = "Nebula UI",
+            Content = "Меню скрыто. Нажмите " .. GetToggleKeyText() .. ", чтобы открыть его снова.",
+            Type = "Info",
+            Duration = 3.5
+        })
     end))
 
     --------------------------------------------------
@@ -3170,7 +3360,7 @@ function Library:CreateWindow(options)
     -- MOBILE BUTTON
     --------------------------------------------------
 
-    local MobileButton = Instance.new("TextButton")
+    MobileButton = Instance.new("TextButton")
     MobileButton.Name = "MobileButton"
     MobileButton.Size = UDim2.fromOffset(50, 50)
     MobileButton.Position = UDim2.new(1, -70, 1, -90)
@@ -3187,6 +3377,8 @@ function Library:CreateWindow(options)
     Corner(MobileButton, 15)
     BindTheme(MobileButton, "BackgroundColor3", "Accent")
 
+    local mobilePulseCancelled = false
+
     local mobileGradient = Instance.new("UIGradient")
     mobileGradient.Transparency = NumberSequence.new({
         NumberSequenceKeypoint.new(0, 0.15),
@@ -3195,10 +3387,10 @@ function Library:CreateWindow(options)
     mobileGradient.Parent = MobileButton
 
     Track(MobileButton.MouseButton1Click:Connect(function()
-        Main.Visible = not Main.Visible
+        Window:Toggle()
         Tween(MobileButton, { Size = UDim2.fromOffset(46, 46) }, 0.1, Enum.EasingStyle.Back)
         task.delay(0.1, function()
-            if MobileButton then
+            if MobileButton and MobileButton.Parent and not Window.Destroyed then
                 Tween(MobileButton, { Size = UDim2.fromOffset(50, 50) }, 0.15, Enum.EasingStyle.Back)
             end
         end)
@@ -3206,9 +3398,9 @@ function Library:CreateWindow(options)
 
     -- gentle pulse
     task.spawn(function()
-        while not Window.Destroyed and MobileButton and MobileButton.Parent do
+        while not Window.Destroyed and not mobilePulseCancelled and MobileButton and MobileButton.Parent do
             task.wait(3)
-            if Window.Destroyed or not MobileButton or not MobileButton.Parent then
+            if Window.Destroyed or mobilePulseCancelled or not MobileButton or not MobileButton.Parent then
                 break
             end
             if MobileButton.Visible then
@@ -3217,7 +3409,7 @@ function Library:CreateWindow(options)
                     NumberSequenceKeypoint.new(1, 0.2)
                 }) }, 0.6)
                 pulse.Completed:Wait()
-                if Window.Destroyed or not mobileGradient then
+                if Window.Destroyed or not mobileGradient or not mobileGradient.Parent then
                     break
                 end
                 Tween(mobileGradient, { Transparency = NumberSequence.new({
@@ -3234,6 +3426,13 @@ function Library:CreateWindow(options)
 
     Window.Responsive = options.Responsive == true
     Window.IsMobile = false
+    Window.Breakpoints = options.Breakpoints or {
+        Mobile = 620,
+        MinWidth = 260,
+        MinHeight = 320,
+        SidebarMax = 220,
+        ViewportPadding = 24,
+    }
 
     local function GetViewportSize()
         local camera = Workspace.CurrentCamera
@@ -3255,6 +3454,7 @@ function Library:CreateWindow(options)
 
     local function ApplyDesktopLayout()
         Menu.Visible = false
+        MobileButton.Visible = false
         Sidebar.Visible = true
         Sidebar.ZIndex = 2
         Sidebar.Size = UDim2.fromOffset(SIDEBAR_WIDTH, 0)
@@ -3270,9 +3470,10 @@ function Library:CreateWindow(options)
 
     local function ApplyMobileLayout()
         Menu.Visible = true
+        MobileButton.Visible = not Main.Visible and UserInputService.TouchEnabled and (options.ShowMobileButton ~= false)
         Sidebar.Visible = false
         Sidebar.ZIndex = 50
-        Sidebar.Size = UDim2.new(0, math.min(SIDEBAR_WIDTH + 30, 220), 1, 0)
+        Sidebar.Size = UDim2.new(0, math.min(SIDEBAR_WIDTH + 30, Window.Breakpoints.SidebarMax), 1, 0)
         Sidebar.BackgroundTransparency = 0
         Sidebar.BackgroundColor3 = Window.Theme.Background
 
@@ -3281,8 +3482,8 @@ function Library:CreateWindow(options)
 
         if not Window.Minimized then
             local viewport = GetViewportSize()
-            local width = math.min(finalSize.X.Offset, math.max(viewport.X - 24, 260))
-            local height = math.min(finalSize.Y.Offset, math.max(viewport.Y - 24, 320))
+            local width = math.min(finalSize.X.Offset, math.max(viewport.X - Window.Breakpoints.ViewportPadding, Window.Breakpoints.MinWidth))
+            local height = math.min(finalSize.Y.Offset, math.max(viewport.Y - Window.Breakpoints.ViewportPadding, Window.Breakpoints.MinHeight))
             Main.Size = UDim2.fromOffset(width, height)
         end
     end
@@ -3291,7 +3492,7 @@ function Library:CreateWindow(options)
         if not Window.Responsive then return end
 
         local viewport = GetViewportSize()
-        local isMobile = viewport.X < 620
+        local isMobile = viewport.X < Window.Breakpoints.Mobile
 
         if isMobile == Window.IsMobile then
             return
@@ -3340,17 +3541,28 @@ function Library:CreateWindow(options)
     -- PUBLIC WINDOW API
     --------------------------------------------------
 
+    local function UpdateMobileButtonVisibility()
+        if not MobileButton then return end
+        local canShow = UserInputService.TouchEnabled and (options.ShowMobileButton ~= false)
+        MobileButton.Visible = canShow and not Main.Visible
+    end
+
     function Window:Show()
         Main.Visible = true
+        UpdateMobileButtonVisibility()
     end
 
     function Window:Hide()
         Main.Visible = false
+        UpdateMobileButtonVisibility()
     end
 
     function Window:Toggle()
         Main.Visible = not Main.Visible
+        UpdateMobileButtonVisibility()
     end
+
+    UpdateMobileButtonVisibility()
 
     function Window:SetSize(size)
         Window.Size = size
@@ -3376,7 +3588,7 @@ function Library:CreateWindow(options)
     end
 
     function Window:SetMobileButtonVisible(value)
-        MobileButton.Visible = UserInputService.TouchEnabled and value == true
+        MobileButton.Visible = UserInputService.TouchEnabled and value == true and not Main.Visible
     end
 
     --------------------------------------------------
@@ -3406,6 +3618,13 @@ function Library:CreateWindow(options)
         end
 
         Window.Destroyed = true
+        mobilePulseCancelled = true
+
+        for _, element in ipairs(Window.AllElements) do
+            if element and element._Cleanup then
+                pcall(element._Cleanup, element)
+            end
+        end
 
         if rawget(_G, ACTIVE_WINDOW_KEY) == Window then
             rawset(_G, ACTIVE_WINDOW_KEY, nil)
