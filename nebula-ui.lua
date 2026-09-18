@@ -95,7 +95,7 @@ end
 
 local Library = {}
 
-Library.Version = "5.4.0"
+Library.Version = "5.4.1"
 Library.Name = "Nebula UI"
 Library.Plugins = {}
 
@@ -4007,7 +4007,11 @@ function Library:CreateWindow(options)
         -- SELECT FIRST TAB
         --------------------------------------------------
 
-        if #Window.Tabs == 1 then
+        -- Select the first real tab automatically.  Settings is created
+        -- internally during CreateWindow(), before the developer adds their
+        -- own tabs.  Without this second condition the developer's first tab
+        -- stayed invisible, leaving the content area blank.
+        if #Window.Tabs == 1 or (Window._SettingsTab and Window.ActiveTab == Window._SettingsTab) then
             Window:SelectTab(Tab)
         end
 
@@ -4881,6 +4885,7 @@ function Library:CreateWindow(options)
     local SettingsTab
     if options.ShowSettings ~= false then
         SettingsTab = Window:AddTab("Settings")
+        Window._SettingsTab = SettingsTab
         SettingsTab:AddSection("Appearance")
 
         SettingsTab:AddDropdown({
