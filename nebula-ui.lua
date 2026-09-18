@@ -79,7 +79,7 @@ end
 
 local Library = {}
 
-Library.Version = "5.1.0"
+Library.Version = "5.2.0"
 Library.Name = "Nebula UI"
 Library.Plugins = {}
 
@@ -533,6 +533,22 @@ function Library:CreateWindow(options)
 
     Window.Main = Main
 
+    -- v5.2: subtle glass gradient for the main shell.
+    local mainGradient = Instance.new("UIGradient")
+    mainGradient.Name = "NebulaMainGradient"
+    mainGradient.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
+        ColorSequenceKeypoint.new(0.45, Color3.fromRGB(235, 225, 255)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(170, 150, 220))
+    })
+    mainGradient.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0.985),
+        NumberSequenceKeypoint.new(0.5, 0.995),
+        NumberSequenceKeypoint.new(1, 1)
+    })
+    mainGradient.Rotation = 135
+    mainGradient.Parent = Main
+
     --------------------------------------------------
     -- SHADOW
     --------------------------------------------------
@@ -604,6 +620,35 @@ function Library:CreateWindow(options)
     SubtitleLabel.Size = UDim2.new(1, -166, 0, 16)
     BindTheme(SubtitleLabel, "TextColor3", "SubText")
 
+    -- v5.2: compact live-status badge.
+    local StatusBadge = Instance.new("Frame")
+    StatusBadge.Name = "StatusBadge"
+    StatusBadge.AnchorPoint = Vector2.new(1, 0.5)
+    StatusBadge.Position = UDim2.new(1, -126, 0, 35)
+    StatusBadge.Size = UDim2.fromOffset(82, 24)
+    StatusBadge.BackgroundColor3 = Window.Theme.Tertiary
+    StatusBadge.BackgroundTransparency = 0.18
+    StatusBadge.BorderSizePixel = 0
+    StatusBadge.Parent = Header
+    Corner(StatusBadge, 12)
+    local statusStroke = Stroke(StatusBadge, Window.Theme.Border, 0.45, 1)
+    BindTheme(StatusBadge, "BackgroundColor3", "Tertiary")
+    BindTheme(statusStroke, "Color", "Border")
+
+    local statusDot = Instance.new("Frame")
+    statusDot.Size = UDim2.fromOffset(7, 7)
+    statusDot.Position = UDim2.fromOffset(10, 9)
+    statusDot.BackgroundColor3 = Window.Theme.Accent
+    statusDot.BorderSizePixel = 0
+    statusDot.Parent = StatusBadge
+    Corner(statusDot, 99)
+    BindTheme(statusDot, "BackgroundColor3", "Accent")
+
+    local statusText = CreateText(StatusBadge, "READY", 9, Enum.Font.GothamBold)
+    statusText.Position = UDim2.fromOffset(23, 0)
+    statusText.Size = UDim2.new(1, -27, 1, 0)
+    BindTheme(statusText, "TextColor3", "SubText")
+
     --------------------------------------------------
     -- WINDOW CONTROLS (menu / minimize / close)
     --------------------------------------------------
@@ -672,7 +717,7 @@ function Library:CreateWindow(options)
     local TabList = Instance.new("ScrollingFrame")
     TabList.Name = "TabList"
     TabList.Position = UDim2.fromOffset(10, 12)
-    TabList.Size = UDim2.new(1, -20, 1, -24)
+    TabList.Size = UDim2.new(1, -20, 1, -70)
     TabList.BackgroundTransparency = 1
     TabList.BorderSizePixel = 0
     TabList.ScrollBarThickness = 2
@@ -686,6 +731,30 @@ function Library:CreateWindow(options)
     local TabLayout = Instance.new("UIListLayout")
     TabLayout.Padding = UDim.new(0, 4)
     TabLayout.Parent = TabList
+
+    local SidebarFooter = Instance.new("Frame")
+    SidebarFooter.Name = "SidebarFooter"
+    SidebarFooter.AnchorPoint = Vector2.new(0, 1)
+    SidebarFooter.Position = UDim2.new(0, 10, 1, -10)
+    SidebarFooter.Size = UDim2.new(1, -20, 0, 42)
+    SidebarFooter.BackgroundColor3 = Window.Theme.Tertiary
+    SidebarFooter.BackgroundTransparency = 0.28
+    SidebarFooter.BorderSizePixel = 0
+    SidebarFooter.Parent = Sidebar
+    Corner(SidebarFooter, 10)
+    local footerStroke = Stroke(SidebarFooter, Window.Theme.Border, 0.55, 1)
+    BindTheme(SidebarFooter, "BackgroundColor3", "Tertiary")
+    BindTheme(footerStroke, "Color", "Border")
+
+    local footerTitle = CreateText(SidebarFooter, "NEBULA UI", 9, Enum.Font.GothamBold)
+    footerTitle.Position = UDim2.fromOffset(10, 4)
+    footerTitle.Size = UDim2.new(1, -20, 0, 15)
+    BindTheme(footerTitle, "TextColor3", "Text")
+
+    local footerVersion = CreateText(SidebarFooter, "v" .. tostring(self.Version), 9, Enum.Font.Gotham)
+    footerVersion.Position = UDim2.fromOffset(10, 20)
+    footerVersion.Size = UDim2.new(1, -20, 0, 14)
+    BindTheme(footerVersion, "TextColor3", "SubText")
 
     --------------------------------------------------
     -- CONTENT
@@ -756,7 +825,53 @@ function Library:CreateWindow(options)
         Tween(searchStroke, { Color = Window.Theme.Border, Transparency = 0.3 }, 0.15)
     end))
 
-    Padding(SearchBox, 0, 0, 0, 0)
+    Padding(SearchBox, 0, 0, 0, 28)
+
+    local searchIcon = CreateText(ContentHeader, "⌕", 16, Enum.Font.GothamMedium)
+    searchIcon.Position = UDim2.new(1, -184, 0.5, -13)
+    searchIcon.Size = UDim2.fromOffset(20, 26)
+    searchIcon.TextXAlignment = Enum.TextXAlignment.Center
+    BindTheme(searchIcon, "TextColor3", "SubText")
+
+    local SearchClear = Instance.new("TextButton")
+    SearchClear.Name = "SearchClear"
+    SearchClear.Text = "×"
+    SearchClear.Font = Enum.Font.GothamBold
+    SearchClear.TextSize = 14
+    SearchClear.TextColor3 = Window.Theme.SubText
+    SearchClear.BackgroundTransparency = 1
+    SearchClear.AutoButtonColor = false
+    SearchClear.Size = UDim2.fromOffset(24, 24)
+    SearchClear.Position = UDim2.new(1, -27, 0.5, -12)
+    SearchClear.Visible = false
+    SearchClear.Parent = SearchBox
+    BindTheme(SearchClear, "TextColor3", "SubText")
+
+    local HeaderLine = Instance.new("Frame")
+    HeaderLine.Name = "HeaderLine"
+    HeaderLine.Position = UDim2.fromOffset(18, 43)
+    HeaderLine.Size = UDim2.new(1, -36, 0, 1)
+    HeaderLine.BackgroundColor3 = Window.Theme.Border
+    HeaderLine.BackgroundTransparency = 0.45
+    HeaderLine.BorderSizePixel = 0
+    HeaderLine.Parent = ContentHeader
+    BindTheme(HeaderLine, "BackgroundColor3", "Border")
+
+    Track(SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
+        SearchClear.Visible = SearchBox.Text ~= ""
+    end))
+
+    Track(SearchClear.Activated:Connect(function()
+        SearchBox.Text = ""
+        SearchBox:ReleaseFocus()
+    end))
+
+    Track(SearchClear.MouseEnter:Connect(function()
+        Tween(SearchClear, { TextColor3 = Window.Theme.Text }, 0.12)
+    end))
+    Track(SearchClear.MouseLeave:Connect(function()
+        Tween(SearchClear, { TextColor3 = Window.Theme.SubText }, 0.12)
+    end))
 
     --------------------------------------------------
     -- DRAGGING
@@ -834,6 +949,32 @@ function Library:CreateWindow(options)
             end
         end
     end))
+
+    --------------------------------------------------
+    -- v5.2: SMALL WINDOW APPEARANCE API
+    --------------------------------------------------
+
+    function Window:SetSidebarWidth(width)
+        width = math.clamp(tonumber(width) or SIDEBAR_WIDTH, 110, 260)
+        SIDEBAR_WIDTH = width
+        if Sidebar and Sidebar.Parent then
+            Sidebar.Size = UDim2.new(0, width, 1, 0)
+            Content.Position = UDim2.fromOffset(width, 0)
+            Content.Size = UDim2.new(1, -width, 1, 0)
+        end
+    end
+
+    function Window:SetStatus(text)
+        if statusText and statusText.Parent then
+            statusText.Text = tostring(text or "READY")
+        end
+    end
+
+    function Window:SetStatusColor(color)
+        if statusDot and statusDot.Parent and typeof(color) == "Color3" then
+            statusDot.BackgroundColor3 = color
+        end
+    end
 
     --------------------------------------------------
     -- THEME SYSTEM
@@ -1315,6 +1456,10 @@ function Library:CreateWindow(options)
                         Size = isActive and UDim2.new(0, 3, 0, 18) or UDim2.new(0, 3, 0, 8)
                     }, 0.22, Enum.EasingStyle.Back)
                 end
+
+                if other.ButtonStroke then
+                    Tween(other.ButtonStroke, { Transparency = isActive and 0.55 or 1 }, 0.18)
+                end
             end
         end
 
@@ -1362,6 +1507,8 @@ function Library:CreateWindow(options)
         Button.Parent = TabList
 
         Corner(Button, 8)
+        local buttonStroke = Stroke(Button, Window.Theme.Accent, 1, 1)
+        BindTheme(buttonStroke, "Color", "Accent")
 
         local Indicator = Instance.new("Frame")
         Indicator.Size = UDim2.new(0, 3, 0, 8)
@@ -1403,6 +1550,7 @@ function Library:CreateWindow(options)
         buttonText.TextColor3 = Window.Theme.SubText
 
         Tab.Button = Button
+        Tab.ButtonStroke = buttonStroke
         Tab.ButtonText = buttonText
         Tab.Icon = iconImage
         Tab.Indicator = Indicator
@@ -1411,6 +1559,7 @@ function Library:CreateWindow(options)
             if Window.ActiveTab ~= Tab then
                 Tween(Button, { BackgroundTransparency = 0.55 }, 0.15)
                 Tween(buttonText, { TextColor3 = Window.Theme.Text }, 0.15)
+                Tween(buttonStroke, { Transparency = 0.78 }, 0.15)
             end
         end))
 
@@ -1418,6 +1567,7 @@ function Library:CreateWindow(options)
             if Window.ActiveTab ~= Tab then
                 Tween(Button, { BackgroundTransparency = 1 }, 0.15)
                 Tween(buttonText, { TextColor3 = Window.Theme.SubText }, 0.15)
+                Tween(buttonStroke, { Transparency = 1 }, 0.15)
             end
         end))
 
@@ -4262,6 +4412,13 @@ function Library:CreateWindow(options)
             Min = 0.25, Max = 2, Decimals = 2,
             Default = Window.Appearance.AnimationSpeed,
             Callback = function(value) Window:SetAnimationSpeed(value) end
+        })
+
+        SettingsTab:AddSlider({
+            Name = "Sidebar Width",
+            Min = 110, Max = 260, Decimals = 0,
+            Default = SIDEBAR_WIDTH,
+            Callback = function(value) Window:SetSidebarWidth(value) end
         })
 
         SettingsTab:AddToggle({
