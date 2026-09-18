@@ -1,5 +1,5 @@
 --[[
-    Nebula UI v4.2
+    Nebula UI v5.0
     Universal Roblox/Luau UI Framework
     Built on top of Nebula UI v3 - visuals unchanged, architecture layered on top.
 
@@ -78,7 +78,7 @@ end
 
 local Library = {}
 
-Library.Version = "4.2.0"
+Library.Version = "5.0.0"
 Library.Name = "Nebula UI"
 Library.Plugins = {}
 
@@ -212,6 +212,27 @@ Library.Themes = {
         Info = Color3.fromRGB(96, 165, 250)
     },
 
+    Nebula = {
+        Background = Color3.fromRGB(14, 9, 22),
+        Secondary = Color3.fromRGB(21, 13, 34),
+        Tertiary = Color3.fromRGB(30, 19, 47),
+        Hover = Color3.fromRGB(45, 28, 68),
+
+        Accent = Color3.fromRGB(168, 85, 247),
+        AccentDark = Color3.fromRGB(126, 34, 206),
+
+        Text = Color3.fromRGB(249, 245, 255),
+        SubText = Color3.fromRGB(171, 153, 190),
+
+        Border = Color3.fromRGB(52, 33, 69),
+        BorderLight = Color3.fromRGB(78, 49, 101),
+
+        Success = Color3.fromRGB(86, 205, 128),
+        Warning = Color3.fromRGB(240, 183, 75),
+        Error = Color3.fromRGB(235, 87, 96),
+        Info = Color3.fromRGB(129, 140, 248)
+    },
+
     Light = {
         Background = Color3.fromRGB(240, 241, 245),
         Secondary = Color3.fromRGB(250, 250, 252),
@@ -234,7 +255,7 @@ Library.Themes = {
     }
 }
 
-Library.CurrentTheme = Library.Themes.Midnight
+Library.CurrentTheme = Library.Themes.Purple
 
 --------------------------------------------------
 -- STATE (low-level reactive key/value store, unchanged from v3)
@@ -398,6 +419,15 @@ function Library:CreateWindow(options)
 
     Window.Destroyed = false
     Window.Minimized = false
+    Window.Appearance = {
+        CornerRadius = tonumber(options.CornerRadius) or 12,
+        UIScale = tonumber(options.UIScale) or 1,
+        TextSize = tonumber(options.TextSize) or 1,
+        Transparency = tonumber(options.Transparency) or 0,
+        AnimationSpeed = tonumber(options.AnimationSpeed) or 1,
+        ReducedMotion = options.ReducedMotion == true,
+    }
+    Window._baseTextSizes = {}
 
     Window.State = self:CreateState()
 
@@ -411,6 +441,10 @@ function Library:CreateWindow(options)
     --------------------------------------------------
 
     local function Track(connection)
+        if connection == nil then
+            return nil
+        end
+
         table.insert(Window._connections, connection)
         return connection
     end
@@ -605,7 +639,7 @@ function Library:CreateWindow(options)
     -- SIDEBAR
     --------------------------------------------------
 
-    local SIDEBAR_WIDTH = 160
+    local SIDEBAR_WIDTH = math.max(100, tonumber(options.SidebarWidth) or 160)
 
     local Sidebar = Instance.new("Frame")
     Sidebar.Name = "Sidebar"
@@ -996,7 +1030,9 @@ function Library:CreateWindow(options)
                 Element.Destroyed = true
 
                 if Element._Cleanup then
-                    pcall(Element._Cleanup, Element)
+                    local cleanup = Element._Cleanup
+                    Element._Cleanup = nil
+                    pcall(cleanup, Element)
                 end
 
                 local root = Element.Root
@@ -1164,8 +1200,20 @@ function Library:CreateWindow(options)
     --------------------------------------------------
 
     function Window:SelectTab(tab)
-        if SearchBox then
+        if not tab then
+            return
+        end
+
+        -- Set the active tab BEFORE clearing SearchBox.
+        -- TextChanged immediately invokes the search handler, so clearing it
+        -- while the previous tab is still active could leave the new tab in
+        -- a stale filtered state.
+        Window.ActiveTab = tab
+
+        if SearchBox and SearchBox.Text ~= "" then
             SearchBox.Text = ""
+        else
+            tab:_Search("")
         end
 
         for _, other in ipairs(Window.Tabs) do
@@ -1197,7 +1245,6 @@ function Library:CreateWindow(options)
         end
 
         CurrentTabLabel.Text = tab.Name
-        Window.ActiveTab = tab
 
         -- v4: on mobile, picking a tab also closes the sidebar overlay
         if Window.IsMobile and Sidebar.Visible then
@@ -1294,6 +1341,10 @@ function Library:CreateWindow(options)
 
         table.insert(Window.Tabs, Tab)
 
+        if #Window.Tabs == 1 then
+            Window:SelectTab(Tab)
+        end
+
         Track(Button.MouseButton1Click:Connect(function()
             Window:SelectTab(Tab)
         end))
@@ -1314,17 +1365,8 @@ function Library:CreateWindow(options)
             end
 
             for _, group in ipairs(Window._Groups) do
-                if group._Elements then
-                    local belongsToTab = false
-                    for _, element in ipairs(group._Elements) do
-                        if element and element._Group == group then
-                            belongsToTab = true
-                            break
-                        end
-                    end
-                    if belongsToTab then
-                        group:_Search(query)
-                    end
+                if group._Tab == Tab then
+                    group:_Search(query)
                 end
             end
 
@@ -1367,10 +1409,52 @@ function Library:CreateWindow(options)
             label.TextColor3 = Window.Theme.SubText
             BindTheme(label, "TextColor3", "SubText")
 
-            local Section = { Root = holder, Name = tostring(title or "SECTION") }
+            local Section = { Root = holder, Name = tostring(title or "SECTION"), Destroyed = false }
+
+            function Section:SetVisible(visible)
+                if not Section.Destroyed and holder then
+                    holder.Visible = visible ~= false
+                end
+            end
+
+            function Section:SetName(name)
+                Section.Name = tostring(name or "SECTION")
+                label.Text = string.upper(Section.Name)
+            end
+
+            function Section:Destroy()
+                if Section.Destroyed then return end
+                Section.Destroyed = true
+
+                for i = #Window._themeBinds, 1, -1 do
+                    local binding = Window._themeBinds[i]
+                    local instance = binding and binding.Instance
+                    local belongs = false
+                    if instance then
+                        pcall(function()
+                            belongs = instance == holder or instance:IsDescendantOf(holder)
+                        end)
+                    end
+                    if belongs then
+                        table.remove(Window._themeBinds, i)
+                    end
+                end
+
+                for i = #Tab._Sections, 1, -1 do
+                    if Tab._Sections[i] == Section then
+                        table.remove(Tab._Sections, i)
+                        break
+                    end
+                end
+
+                if holder then
+                    holder:Destroy()
+                end
+            end
+
             table.insert(Tab._Sections, Section)
 
-            return holder
+            return Section
         end
 
         --------------------------------------------------
@@ -1842,13 +1926,24 @@ function Library:CreateWindow(options)
                 end
             end))
 
+            local function StopSliderDrag()
+                if draggingSlider then
+                    draggingSlider = false
+                    Tween(knob, { Size = UDim2.fromOffset(12, 12) }, 0.15)
+                end
+            end
+
             Track(UserInputService.InputEnded:Connect(function(i)
                 if i.UserInputType == Enum.UserInputType.MouseButton1
                 or i.UserInputType == Enum.UserInputType.Touch then
-                    if draggingSlider then
-                        draggingSlider = false
-                        Tween(knob, { Size = UDim2.fromOffset(12, 12) }, 0.15)
-                    end
+                    StopSliderDrag()
+                end
+            end))
+
+            Track(input.InputEnded:Connect(function(i)
+                if i.UserInputType == Enum.UserInputType.MouseButton1
+                or i.UserInputType == Enum.UserInputType.Touch then
+                    StopSliderDrag()
                 end
             end))
 
@@ -1886,6 +1981,7 @@ function Library:CreateWindow(options)
             Element.IsOpen = false
 
             local overlay
+            Element._OpenToken = 0
 
             local holder = Instance.new("Frame")
             holder.Name = Element.Name
@@ -1978,24 +2074,24 @@ function Library:CreateWindow(options)
                     itemText.TextColor3 = option == Element.Value and Window.Theme.Text or Window.Theme.SubText
                     itemText.ZIndex = 6
 
-                    item.MouseEnter:Connect(function()
+                    Track(item.MouseEnter:Connect(function()
                         if option ~= Element.Value then
                             Tween(item, { BackgroundColor3 = Window.Theme.Hover }, 0.12)
                             Tween(itemText, { TextColor3 = Window.Theme.Text }, 0.12)
                         end
-                    end)
+                    end))
 
-                    item.MouseLeave:Connect(function()
+                    Track(item.MouseLeave:Connect(function()
                         if option ~= Element.Value then
                             Tween(item, { BackgroundColor3 = Window.Theme.Tertiary }, 0.12)
                             Tween(itemText, { TextColor3 = Window.Theme.SubText }, 0.12)
                         end
-                    end)
+                    end))
 
-                    item.MouseButton1Click:Connect(function()
+                    Track(item.MouseButton1Click:Connect(function()
                         Element:Set(option)
                         Element:Close()
-                    end)
+                    end))
                 end
             end
 
@@ -2014,10 +2110,12 @@ function Library:CreateWindow(options)
             end
 
             function Element:OpenMenu()
-                if Element.IsOpen or Element.Disabled then
+                if Element.IsOpen or Element.Disabled or Element.Destroyed then
                     return
                 end
 
+                Element._OpenToken = Element._OpenToken + 1
+                local token = Element._OpenToken
                 Element.IsOpen = true
                 list.Visible = true
 
@@ -2038,6 +2136,7 @@ function Library:CreateWindow(options)
                 end
 
                 Element.IsOpen = false
+                Element._OpenToken = Element._OpenToken + 1
 
                 Tween(arrow, { Rotation = 0 }, 0.2, Enum.EasingStyle.Back)
                 Tween(list, { Size = UDim2.new(1, -28, 0, 0) }, 0.18)
@@ -2050,8 +2149,9 @@ function Library:CreateWindow(options)
                     o:Destroy()
                 end
 
+                local token = Element._OpenToken
                 task.delay(0.2, function()
-                    if list and list.Parent then
+                    if token == Element._OpenToken and list and list.Parent then
                         list.Visible = false
                     end
                 end)
@@ -2099,6 +2199,7 @@ function Library:CreateWindow(options)
 
             local overlay
             local isOpen = false
+            Element._OpenToken = 0
 
             local holder = Instance.new("Frame")
             holder.Name = Element.Name
@@ -2207,21 +2308,21 @@ function Library:CreateWindow(options)
                     itemText.TextColor3 = isSelected and Window.Theme.Text or Window.Theme.SubText
                     itemText.ZIndex = 6
 
-                    item.MouseEnter:Connect(function()
+                    Track(item.MouseEnter:Connect(function()
                         if not Element.Selected[value] then
                             Tween(item, { BackgroundColor3 = Window.Theme.Hover }, 0.12)
                             Tween(itemText, { TextColor3 = Window.Theme.Text }, 0.12)
                         end
-                    end)
+                    end))
 
-                    item.MouseLeave:Connect(function()
+                    Track(item.MouseLeave:Connect(function()
                         if not Element.Selected[value] then
                             Tween(item, { BackgroundColor3 = Window.Theme.Tertiary }, 0.12)
                             Tween(itemText, { TextColor3 = Window.Theme.SubText }, 0.12)
                         end
-                    end)
+                    end))
 
-                    item.MouseButton1Click:Connect(function()
+                    Track(item.MouseButton1Click:Connect(function()
                         Element.Selected[value] = not Element.Selected[value]
 
                         local nowSelected = Element.Selected[value]
@@ -2240,7 +2341,7 @@ function Library:CreateWindow(options)
                         if options.Callback then
                             task.spawn(options.Callback, Element:Get())
                         end
-                    end)
+                    end))
                 end
             end
 
@@ -2273,10 +2374,12 @@ function Library:CreateWindow(options)
             end
 
             local function OpenMenu()
-                if isOpen or Element.Disabled then
+                if isOpen or Element.Disabled or Element.Destroyed then
                     return
                 end
 
+                Element._OpenToken = Element._OpenToken + 1
+                local token = Element._OpenToken
                 isOpen = true
                 list.Visible = true
 
@@ -2297,6 +2400,7 @@ function Library:CreateWindow(options)
                 end
 
                 isOpen = false
+                Element._OpenToken = Element._OpenToken + 1
 
                 Tween(arrow, { Rotation = 0 }, 0.2, Enum.EasingStyle.Back)
                 Tween(list, { Size = UDim2.new(1, -28, 0, 0) }, 0.18)
@@ -2308,8 +2412,9 @@ function Library:CreateWindow(options)
                     o:Destroy()
                 end
 
+                local token = Element._OpenToken
                 task.delay(0.2, function()
-                    if list and list.Parent then
+                    if token == Element._OpenToken and list and list.Parent then
                         list.Visible = false
                     end
                 end)
@@ -2478,6 +2583,13 @@ function Library:CreateWindow(options)
             end))
 
             Track(UserInputService.InputBegan:Connect(function(input, processed)
+                if listening and processed then
+                    listening = false
+                    keyText.Text = Element.Value.Name
+                    Tween(keyStroke, { Color = Window.Theme.Border, Transparency = 0.45 }, 0.15)
+                    return
+                end
+
                 if processed then
                     return
                 end
@@ -3072,9 +3184,25 @@ function Library:CreateWindow(options)
             function Container:Destroy()
                 if Container.Destroyed then return end
                 Container.Destroyed = true
+
                 if frame then
+                    for i = #Window._themeBinds, 1, -1 do
+                        local binding = Window._themeBinds[i]
+                        local instance = binding and binding.Instance
+                        local belongs = false
+                        if instance then
+                            pcall(function()
+                                belongs = instance == frame or instance:IsDescendantOf(frame)
+                            end)
+                        end
+                        if belongs then
+                            table.remove(Window._themeBinds, i)
+                        end
+                    end
+
                     frame:Destroy()
                     frame = nil
+                    Container.Root = nil
                 end
             end
 
@@ -3094,6 +3222,8 @@ function Library:CreateWindow(options)
             options = options or {}
 
             local Group = {}
+            Group._Tab = Tab
+            Group._ManuallyHidden = false
             Group.Name = options.Name or "Group"
             Group.Columns = math.max(1, options.Columns or 2)
             Group._Elements = {}
@@ -3156,10 +3286,14 @@ function Library:CreateWindow(options)
 
             local function Wrap(addFn)
                 return function(_, elOptions)
-                    elOptions = elOptions or {}
-                    elOptions._Parent = GetTargetParent()
+                    local source = elOptions or {}
+                    local copied = {}
+                    for key, value in pairs(source) do
+                        copied[key] = value
+                    end
+                    copied._Parent = GetTargetParent()
 
-                    local element = addFn(Tab, elOptions)
+                    local element = addFn(Tab, copied)
                     element._Group = Group
                     table.insert(Group._Elements, element)
                     return element
@@ -3210,6 +3344,7 @@ function Library:CreateWindow(options)
             end
 
             function Group:SetVisible(visible)
+                Group._ManuallyHidden = visible == false
                 holder.Visible = visible ~= false
             end
 
@@ -3222,6 +3357,21 @@ function Library:CreateWindow(options)
                     end
                 end
                 Group._Elements = {}
+
+                for i = #Window._themeBinds, 1, -1 do
+                    local binding = Window._themeBinds[i]
+                    local instance = binding and binding.Instance
+                    local belongs = false
+                    if instance then
+                        pcall(function()
+                            belongs = instance == holder or instance:IsDescendantOf(holder)
+                        end)
+                    end
+                    if belongs then
+                        table.remove(Window._themeBinds, i)
+                    end
+                end
+
                 for i = #Window._Groups, 1, -1 do
                     if Window._Groups[i] == Group then
                         table.remove(Window._Groups, i)
@@ -3231,10 +3381,18 @@ function Library:CreateWindow(options)
                 if holder then
                     holder:Destroy()
                 end
+                Group.Root = nil
+                Group.ColumnFrames = {}
             end
 
             function Group:_Search(query)
                 query = string.lower(query or "")
+
+                if Group._ManuallyHidden then
+                    holder.Visible = false
+                    return
+                end
+
                 local hasMatch = query == ""
 
                 for _, element in ipairs(Group._Elements) do
@@ -3588,11 +3746,251 @@ function Library:CreateWindow(options)
     end
 
     function Window:SetMobileButtonVisible(value)
-        MobileButton.Visible = UserInputService.TouchEnabled and value == true and not Main.Visible
+        pcall(function()
+            MobileButton.Visible = UserInputService.TouchEnabled and value == true and not Main.Visible
+        end)
     end
 
     --------------------------------------------------
-    -- v4: PLUGIN LOADING
+    -- v5: APPEARANCE / MOTION SYSTEM
+    --------------------------------------------------
+
+    local function CopyTheme(theme)
+        local copy = {}
+        for key, value in pairs(theme or {}) do
+            copy[key] = value
+        end
+        return copy
+    end
+
+    local function ApplyCornerRadius()
+        local radius = math.max(0, tonumber(Window.Appearance.CornerRadius) or 12)
+        for _, instance in ipairs(ScreenGui:GetDescendants()) do
+            if instance:IsA("UICorner") then
+                pcall(function()
+                    instance.CornerRadius = UDim.new(0, radius)
+                end)
+            end
+        end
+    end
+
+    local function ApplyUIScale()
+        if not Window._UIScaleObject then
+            local scale = Instance.new("UIScale")
+            scale.Name = "NebulaUIScale"
+            scale.Parent = Main
+            Window._UIScaleObject = scale
+        end
+        Window._UIScaleObject.Scale = math.clamp(tonumber(Window.Appearance.UIScale) or 1, 0.75, 1.35)
+    end
+
+    local function ApplyTextSize()
+        local multiplier = math.clamp(tonumber(Window.Appearance.TextSize) or 1, 0.8, 1.25)
+        for _, instance in ipairs(ScreenGui:GetDescendants()) do
+            if instance:IsA("TextLabel") or instance:IsA("TextButton") or instance:IsA("TextBox") then
+                local base = instance:GetAttribute("NebulaBaseTextSize")
+                if type(base) ~= "number" then
+                    base = instance.TextSize
+                    pcall(function() instance:SetAttribute("NebulaBaseTextSize", base) end)
+                end
+                pcall(function() instance.TextSize = math.max(8, math.floor(base * multiplier + 0.5)) end)
+            end
+        end
+    end
+
+    local function ApplyTransparency()
+        local amount = math.clamp(tonumber(Window.Appearance.Transparency) or 0, 0, 0.65)
+        local targets = { Main, Header, Content }
+        for _, instance in ipairs(targets) do
+            if instance and instance.Parent then
+                pcall(function() instance.BackgroundTransparency = amount end)
+            end
+        end
+    end
+
+    function Window:SetCornerRadius(value)
+        Window.Appearance.CornerRadius = math.max(0, tonumber(value) or 12)
+        ApplyCornerRadius()
+        return Window
+    end
+
+    function Window:SetUIScale(value)
+        Window.Appearance.UIScale = math.clamp(tonumber(value) or 1, 0.75, 1.35)
+        ApplyUIScale()
+        return Window
+    end
+
+    function Window:SetTextSize(value)
+        Window.Appearance.TextSize = math.clamp(tonumber(value) or 1, 0.8, 1.25)
+        ApplyTextSize()
+        return Window
+    end
+
+    function Window:SetTransparency(value)
+        Window.Appearance.Transparency = math.clamp(tonumber(value) or 0, 0, 0.65)
+        ApplyTransparency()
+        return Window
+    end
+
+    function Window:SetAnimationSpeed(value)
+        Window.Appearance.AnimationSpeed = math.clamp(tonumber(value) or 1, 0.25, 2)
+        return Window
+    end
+
+    function Window:SetReducedMotion(value)
+        Window.Appearance.ReducedMotion = value == true
+        return Window
+    end
+
+    function Window:SetAccentColor(color)
+        if typeof(color) ~= "Color3" then return Window end
+        local theme = CopyTheme(Window.Theme)
+        theme.Accent = color
+        Window:SetTheme(theme)
+        return Window
+    end
+
+    function Window:SetThemeColor(key, color)
+        if type(key) ~= "string" or typeof(color) ~= "Color3" then return Window end
+        local theme = CopyTheme(Window.Theme)
+        theme[key] = color
+        Window:SetTheme(theme)
+        return Window
+    end
+
+    function Window:GetTheme()
+        return CopyTheme(Window.Theme)
+    end
+
+    function Window:ResetAppearance()
+        Window.Appearance.CornerRadius = 12
+        Window.Appearance.UIScale = 1
+        Window.Appearance.TextSize = 1
+        Window.Appearance.Transparency = 0
+        Window.Appearance.AnimationSpeed = 1
+        Window.Appearance.ReducedMotion = false
+        Window:SetTheme("Nebula")
+        ApplyCornerRadius()
+        ApplyUIScale()
+        ApplyTextSize()
+        ApplyTransparency()
+        return Window
+    end
+
+    Window.Tween = function(a, b, c, d, e)
+        local instance, properties, duration, style, direction = b, c, d, e, nil
+        if a == Window then
+            instance, properties, duration, style, direction = b, c, d, e, nil
+        else
+            instance, properties, duration, style, direction = a, b, c, d, e
+        end
+        local base = tonumber(duration) or 0.25
+        if Window.Appearance.ReducedMotion then
+            base = 0
+        else
+            base = base / math.max(0.05, Window.Appearance.AnimationSpeed)
+        end
+        if base <= 0 then
+            for property, value in pairs(properties or {}) do
+                pcall(function() instance[property] = value end)
+            end
+            return nil
+        end
+        return Tween(instance, properties, base, style, direction)
+    end
+
+    --------------------------------------------------
+    -- v5: SETTINGS TAB
+    --------------------------------------------------
+
+    if options.ShowSettings ~= false then
+        local SettingsTab = Window:AddTab("Settings", "⚙")
+        SettingsTab:AddSection("Appearance")
+
+        SettingsTab:AddDropdown({
+            Name = "Theme",
+            Values = {"Nebula", "Midnight", "Purple", "Ocean", "Crimson", "Forest", "Light"},
+            Default = options.Theme or "Nebula",
+            Callback = function(value)
+                Window:SetTheme(value)
+            end
+        })
+
+        SettingsTab:AddSlider({
+            Name = "Corner Radius",
+            Min = 0, Max = 20, Decimals = 0,
+            Default = Window.Appearance.CornerRadius,
+            Callback = function(value) Window:SetCornerRadius(value) end
+        })
+
+        SettingsTab:AddSlider({
+            Name = "UI Scale",
+            Min = 0.75, Max = 1.35, Decimals = 2,
+            Default = Window.Appearance.UIScale,
+            Callback = function(value) Window:SetUIScale(value) end
+        })
+
+        SettingsTab:AddSlider({
+            Name = "Text Size",
+            Min = 0.8, Max = 1.25, Decimals = 2,
+            Default = Window.Appearance.TextSize,
+            Callback = function(value) Window:SetTextSize(value) end
+        })
+
+        SettingsTab:AddSlider({
+            Name = "Transparency",
+            Min = 0, Max = 0.65, Decimals = 2,
+            Default = Window.Appearance.Transparency,
+            Callback = function(value) Window:SetTransparency(value) end
+        })
+
+        SettingsTab:AddSlider({
+            Name = "Animation Speed",
+            Min = 0.25, Max = 2, Decimals = 2,
+            Default = Window.Appearance.AnimationSpeed,
+            Callback = function(value) Window:SetAnimationSpeed(value) end
+        })
+
+        SettingsTab:AddToggle({
+            Name = "Reduced Motion",
+            Default = Window.Appearance.ReducedMotion,
+            Description = "Minimize UI animation and transitions.",
+            Callback = function(value) Window:SetReducedMotion(value) end
+        })
+
+        SettingsTab:AddSection("Custom Theme")
+
+        SettingsTab:AddColorPicker({
+            Name = "Accent Color",
+            Default = Window.Theme.Accent,
+            Callback = function(value) Window:SetThemeColor("Accent", value) end
+        })
+
+        SettingsTab:AddColorPicker({
+            Name = "Background Color",
+            Default = Window.Theme.Background,
+            Callback = function(value) Window:SetThemeColor("Background", value) end
+        })
+
+        SettingsTab:AddColorPicker({
+            Name = "Text Color",
+            Default = Window.Theme.Text,
+            Callback = function(value) Window:SetThemeColor("Text", value) end
+        })
+
+        SettingsTab:AddButton({
+            Name = "Reset Appearance",
+            Callback = function() Window:ResetAppearance() end
+        })
+    end
+
+    ApplyCornerRadius()
+    ApplyUIScale()
+    ApplyTextSize()
+    ApplyTransparency()
+
+    --------------------------------------------------
+    -- v5: PLUGIN LOADING
     --------------------------------------------------
 
     Window._LoadedPlugins = {}
@@ -3622,7 +4020,9 @@ function Library:CreateWindow(options)
 
         for _, element in ipairs(Window.AllElements) do
             if element and element._Cleanup then
-                pcall(element._Cleanup, element)
+                local cleanup = element._Cleanup
+                element._Cleanup = nil
+                pcall(cleanup, element)
             end
         end
 
@@ -3646,9 +4046,19 @@ function Library:CreateWindow(options)
             Window.State:Destroy()
         end
 
+        for _, tab in ipairs(Window.Tabs) do
+            if tab and tab.Elements then
+                table.clear(tab.Elements)
+            end
+            if tab and tab._Sections then
+                table.clear(tab._Sections)
+            end
+        end
+
         table.clear(Window.AllElements)
         table.clear(Window.ElementsByID)
         table.clear(Window._themeBinds)
+        table.clear(Window._Groups)
 
         if immediate then
             pcall(function()
@@ -3700,7 +4110,97 @@ function Library:CreateWindow(options)
     -- DEFAULT THEME
     --------------------------------------------------
 
-    Window:SetTheme(options.Theme or "Midnight")
+    Window:SetTheme(options.Theme or "Nebula")
+
+    --------------------------------------------------
+    -- v5: LOADING SCREEN
+    --------------------------------------------------
+
+    local function ShowLoadingScreen()
+        local overlay = Instance.new("Frame")
+        overlay.Name = "Loading"
+        overlay.Size = UDim2.fromScale(1, 1)
+        overlay.BackgroundColor3 = Window.Theme.Background
+        overlay.BorderSizePixel = 0
+        overlay.ZIndex = 500
+        overlay.Parent = ScreenGui
+
+        local panel = Instance.new("Frame")
+        panel.AnchorPoint = Vector2.new(0.5, 0.5)
+        panel.Position = UDim2.fromScale(0.5, 0.5)
+        panel.Size = UDim2.fromOffset(300, 150)
+        panel.BackgroundColor3 = Window.Theme.Secondary
+        panel.BorderSizePixel = 0
+        panel.Parent = overlay
+        Corner(panel, Window.Appearance.CornerRadius)
+        local panelStroke = Stroke(panel, Window.Theme.Border, 0.35)
+        BindTheme(panel, "BackgroundColor3", "Secondary")
+        BindTheme(panelStroke, "Color", "Border")
+
+        local title = CreateText(panel, Window.Title, 17, Enum.Font.GothamBold)
+        title.Position = UDim2.fromOffset(22, 18)
+        title.Size = UDim2.new(1, -44, 0, 24)
+        title.TextXAlignment = Enum.TextXAlignment.Center
+        BindTheme(title, "TextColor3", "Text")
+
+        local status = CreateText(panel, "Initializing...", 10, Enum.Font.Gotham)
+        status.Position = UDim2.fromOffset(22, 52)
+        status.Size = UDim2.new(1, -44, 0, 18)
+        status.TextXAlignment = Enum.TextXAlignment.Center
+        BindTheme(status, "TextColor3", "SubText")
+
+        local bar = Instance.new("Frame")
+        bar.Position = UDim2.fromOffset(22, 91)
+        bar.Size = UDim2.new(1, -44, 0, 6)
+        bar.BackgroundColor3 = Window.Theme.Tertiary
+        bar.BorderSizePixel = 0
+        bar.Parent = panel
+        Corner(bar, 6)
+        BindTheme(bar, "BackgroundColor3", "Tertiary")
+
+        local fill = Instance.new("Frame")
+        fill.Size = UDim2.new(0, 0, 1, 0)
+        fill.BackgroundColor3 = Window.Theme.Accent
+        fill.BorderSizePixel = 0
+        fill.Parent = bar
+        Corner(fill, 6)
+        BindTheme(fill, "BackgroundColor3", "Accent")
+
+        local percent = CreateText(panel, "0%", 10, Enum.Font.GothamBold)
+        percent.Position = UDim2.fromOffset(22, 105)
+        percent.Size = UDim2.new(1, -44, 0, 18)
+        percent.TextXAlignment = Enum.TextXAlignment.Center
+        BindTheme(percent, "TextColor3", "Accent")
+
+        local stages = {
+            {"Core", 20},
+            {"Theme", 45},
+            {"Interface", 70},
+            {"Responsive layout", 90},
+            {"Ready", 100},
+        }
+
+        task.spawn(function()
+            for _, stage in ipairs(stages) do
+                if Window.Destroyed or not overlay.Parent then return end
+                status.Text = stage[1] .. "..."
+                percent.Text = tostring(stage[2]) .. "%"
+                local duration = Window.Appearance.ReducedMotion and 0.01 or (0.12 / math.max(0.25, Window.Appearance.AnimationSpeed))
+                Tween(fill, {Size = UDim2.new(stage[2] / 100, 0, 1, 0)}, duration)
+                task.wait(duration)
+            end
+
+            if Window.Destroyed or not overlay.Parent then return end
+            status.Text = "Ready"
+            task.wait(Window.Appearance.ReducedMotion and 0.02 or 0.15)
+            Tween(overlay, {BackgroundTransparency = 1}, Window.Appearance.ReducedMotion and 0 or 0.22)
+            Tween(panel, {BackgroundTransparency = 1}, Window.Appearance.ReducedMotion and 0 or 0.18)
+            task.wait(Window.Appearance.ReducedMotion and 0.02 or 0.24)
+            if overlay and overlay.Parent then overlay:Destroy() end
+        end)
+    end
+
+    ShowLoadingScreen()
 
     --------------------------------------------------
     -- RETURN
