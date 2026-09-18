@@ -1103,6 +1103,23 @@ function Library:CreateWindow(options)
         table.insert(Tab.Elements, Element)
         table.insert(Window.AllElements, Element)
 
+        if options._Section and options._Section._Elements then
+            table.insert(options._Section._Elements, Element)
+            local previousCleanup = Element._Cleanup
+            Element._Cleanup = function(self)
+                if previousCleanup then
+                    pcall(previousCleanup, self)
+                end
+                local list = options._Section._Elements
+                for i = #list, 1, -1 do
+                    if list[i] == self then
+                        table.remove(list, i)
+                        break
+                    end
+                end
+            end
+        end
+
         if Element.ID then
             if Window.ElementsByID[Element.ID] then
                 warn("[Nebula UI] Duplicate element ID:", Element.ID)
@@ -1271,8 +1288,23 @@ function Library:CreateWindow(options)
     end
 
     function Window:AddTab(name, icon)
+        -- Accept both common call orders: AddTab(name, icon) and AddTab(icon, name).
+        -- Asset IDs are never used as the visible tab title.
+        if type(name) == "string" and type(icon) == "string" then
+            local nameLooksLikeIcon = string.find(name, "rbxassetid://", 1, true) ~= nil
+            local iconLooksLikeIcon = string.find(icon, "rbxassetid://", 1, true) ~= nil
+            if nameLooksLikeIcon and not iconLooksLikeIcon then
+                name, icon = icon, name
+            end
+        elseif type(name) == "string" and string.find(name, "rbxassetid://", 1, true) ~= nil and icon == nil then
+            -- If an old script supplied only an icon, give it a safe title.
+            icon = name
+            name = "Tab"
+        end
+
         local Tab = {}
-        Tab.Name = name or "Tab"
+        Tab.Name = tostring(name or "Tab")
+        Tab.Icon = icon
         Tab.Elements = {}
         Tab.Containers = {}
 
@@ -1304,18 +1336,36 @@ function Library:CreateWindow(options)
         Corner(Indicator, 3)
         BindTheme(Indicator, "BackgroundColor3", "Accent")
 
+        -- Render asset IDs as actual icons instead of putting the raw ID
+        -- into the tab title (which used to clip names like "Combat").
+        local hasImageIcon = type(icon) == "string" and string.find(icon, "rbxassetid://", 1, true) ~= nil
+        local iconImage
+
+        if hasImageIcon then
+            iconImage = Instance.new("ImageLabel")
+            iconImage.Name = "Icon"
+            iconImage.BackgroundTransparency = 1
+            iconImage.Size = UDim2.fromOffset(18, 18)
+            iconImage.Position = UDim2.fromOffset(10, 9)
+            iconImage.Image = icon
+            iconImage.ImageTransparency = 0.15
+            iconImage.Parent = Button
+            BindTheme(iconImage, "ImageColor3", "SubText")
+        end
+
         local buttonText = CreateText(
             Button,
-            (icon and tostring(icon) .. "  " or "") .. Tab.Name,
+            Tab.Name,
             12,
             Enum.Font.GothamMedium
         )
-        buttonText.Position = UDim2.fromOffset(13, 0)
-        buttonText.Size = UDim2.new(1, -20, 1, 0)
+        buttonText.Position = UDim2.fromOffset(hasImageIcon and 36 or 13, 0)
+        buttonText.Size = UDim2.new(1, -(hasImageIcon and 43 or 20), 1, 0)
         buttonText.TextColor3 = Window.Theme.SubText
 
         Tab.Button = Button
         Tab.ButtonText = buttonText
+        Tab.Icon = iconImage
         Tab.Indicator = Indicator
 
         Track(Button.MouseEnter:Connect(function()
@@ -1439,7 +1489,45 @@ function Library:CreateWindow(options)
             label.TextColor3 = Window.Theme.SubText
             BindTheme(label, "TextColor3", "SubText")
 
-            local Section = { Root = holder, Name = tostring(title or "SECTION"), Destroyed = false }
+            local Section = {
+                Root = holder,
+                Name = tostring(title or "SECTION"),
+                Destroyed = false,
+                _Elements = {}
+            }
+
+            -- Sections are lightweight headers, but keep the old convenient
+            -- API: Section:AddToggle(...), Section:AddButton(...), etc.
+            -- Elements are placed in the tab flow directly below the header.
+            local function SectionOptions(options)
+                if type(options) ~= "table" then
+                    options = {}
+                else
+                    local copy = {}
+                    for key, value in pairs(options) do
+                        copy[key] = value
+                    end
+                    options = copy
+                end
+                options._Section = Section
+                return options
+            end
+
+            function Section:AddButton(options) return Tab:AddButton(SectionOptions(options)) end
+            function Section:AddToggle(options) return Tab:AddToggle(SectionOptions(options)) end
+            function Section:AddSlider(options) return Tab:AddSlider(SectionOptions(options)) end
+            function Section:AddDropdown(options) return Tab:AddDropdown(SectionOptions(options)) end
+            function Section:AddMultiDropdown(options) return Tab:AddMultiDropdown(SectionOptions(options)) end
+            function Section:AddTextbox(options) return Tab:AddTextbox(SectionOptions(options)) end
+            function Section:AddKeybind(options) return Tab:AddKeybind(SectionOptions(options)) end
+            function Section:AddColorPicker(options) return Tab:AddColorPicker(SectionOptions(options)) end
+            function Section:AddLabel(options) return Tab:AddLabel(SectionOptions(options)) end
+            function Section:AddParagraph(title, text)
+                if type(title) == "table" then
+                    return Tab:AddParagraph(SectionOptions(title))
+                end
+                return Tab:AddParagraph(SectionOptions({ Title = title, Text = text }))
+            end
 
             function Section:SetVisible(visible)
                 if not Section.Destroyed and holder then
@@ -1469,6 +1557,14 @@ function Library:CreateWindow(options)
                         table.remove(Window._themeBinds, i)
                     end
                 end
+
+                for i = #Section._Elements, 1, -1 do
+                    local element = Section._Elements[i]
+                    if element and element.Destroy and not element.Destroyed then
+                        pcall(element.Destroy, element)
+                    end
+                end
+                Section._Elements = {}
 
                 for i = #Tab._Sections, 1, -1 do
                     if Tab._Sections[i] == Section then
@@ -4285,4 +4381,3 @@ end
 --------------------------------------------------
 
 return Library
- 
