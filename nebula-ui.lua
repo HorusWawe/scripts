@@ -1,5 +1,5 @@
 --[[
-    Nebula UI v5.0
+    Nebula UI v5.3
     Universal Roblox/Luau UI Framework
     Built on top of Nebula UI v3 - visuals unchanged, architecture layered on top.
 
@@ -79,7 +79,7 @@ end
 
 local Library = {}
 
-Library.Version = "5.2.0"
+Library.Version = "5.3.0"
 Library.Name = "Nebula UI"
 Library.Plugins = {}
 
@@ -424,6 +424,7 @@ function Library:CreateWindow(options)
     -- Group ends up in here, whether or not it has an ID).
     Window.AllElements = {}
     Window.ElementsByID = {}
+    Window.ConfigElements = {}
     Window._Groups = {}
 
     Window.Destroyed = false
@@ -431,11 +432,21 @@ function Library:CreateWindow(options)
     Window.MobileLayout = {
         Enabled = options.MobileLayout ~= false,
         EditMode = false,
-        ButtonSize = tonumber(options.MobileButtonSize) or 52,
+        Mode = options.MobileButtonMode or "Watermark",
+        ButtonText = tostring(options.MobileButtonText or "Nebula"),
+        ButtonWidth = math.clamp(tonumber(options.MobileButtonWidth) or tonumber(options.MobileButtonSize) or 110, 36, 220),
+        ButtonHeight = math.clamp(tonumber(options.MobileButtonHeight) or tonumber(options.MobileButtonSize) or 34, 32, 110),
+        ButtonSize = math.min(
+            math.clamp(tonumber(options.MobileButtonWidth) or tonumber(options.MobileButtonSize) or 110, 36, 220),
+            math.clamp(tonumber(options.MobileButtonHeight) or tonumber(options.MobileButtonSize) or 34, 32, 110)
+        ),
         ButtonTransparency = tonumber(options.MobileButtonTransparency) or 0.08,
+        ButtonColor = typeof(options.MobileButtonColor) == "Color3" and options.MobileButtonColor or nil,
         OpenButtonPosition = options.MobileButtonPosition or UDim2.new(1, -72, 1, -96),
+        PositionPreset = options.MobileButtonPositionPreset or "Top Right",
         SavedActions = {},
     }
+    Window._MobileButtonCustomColor = Window.MobileLayout.ButtonColor
     Window.Appearance = {
         CornerRadius = tonumber(options.CornerRadius) or 12,
         UIScale = tonumber(options.UIScale) or 1,
@@ -827,7 +838,7 @@ function Library:CreateWindow(options)
 
     Padding(SearchBox, 0, 0, 0, 28)
 
-    local searchIcon = CreateText(ContentHeader, "⌕", 16, Enum.Font.GothamMedium)
+    local searchIcon = CreateText(ContentHeader, "", 16, Enum.Font.GothamMedium)
     searchIcon.Position = UDim2.new(1, -184, 0.5, -13)
     searchIcon.Size = UDim2.fromOffset(20, 26)
     searchIcon.TextXAlignment = Enum.TextXAlignment.Center
@@ -962,18 +973,21 @@ function Library:CreateWindow(options)
             Content.Position = UDim2.fromOffset(width, 0)
             Content.Size = UDim2.new(1, -width, 1, 0)
         end
+        return Window
     end
 
     function Window:SetStatus(text)
         if statusText and statusText.Parent then
             statusText.Text = tostring(text or "READY")
         end
+        return Window
     end
 
     function Window:SetStatusColor(color)
         if statusDot and statusDot.Parent and typeof(color) == "Color3" then
             statusDot.BackgroundColor3 = color
         end
+        return Window
     end
 
     --------------------------------------------------
@@ -1019,6 +1033,11 @@ function Library:CreateWindow(options)
             if element._ApplyTheme then
                 pcall(element._ApplyTheme, element, selected)
             end
+        end
+
+        if Window._MobileButtonCustomColor and Window.GetMobileButton then
+            local mobile = Window:GetMobileButton()
+            if mobile and mobile.Parent then mobile.BackgroundColor3 = Window._MobileButtonCustomColor end
         end
     end
 
@@ -1271,6 +1290,9 @@ function Library:CreateWindow(options)
                 if Element.ID and Window.ElementsByID[Element.ID] == Element then
                     Window.ElementsByID[Element.ID] = nil
                 end
+                if Element._ConfigKey and Window.ConfigElements[Element._ConfigKey] == Element then
+                    Window.ConfigElements[Element._ConfigKey] = nil
+                end
             end
         end
 
@@ -1282,6 +1304,21 @@ function Library:CreateWindow(options)
 
         table.insert(Tab.Elements, Element)
         table.insert(Window.AllElements, Element)
+
+        -- v5.3: every settable UI element gets a stable config key even when
+        -- the consumer did not provide an explicit ID. This makes configs
+        -- useful for existing scripts that never used the v4 ID API.
+        if Element.Get and Element.Set then
+            local baseKey = tostring(Element.ID or (Tab.Name .. "::" .. tostring(Element.Name)))
+            local key = baseKey
+            local suffix = 2
+            while Window.ConfigElements[key] and Window.ConfigElements[key] ~= Element do
+                key = baseKey .. "::" .. tostring(suffix)
+                suffix += 1
+            end
+            Element._ConfigKey = key
+            Window.ConfigElements[key] = Element
+        end
 
         if options._Section and options._Section._Elements then
             table.insert(options._Section._Elements, Element)
@@ -1385,6 +1422,17 @@ function Library:CreateWindow(options)
         return data
     end
 
+    function Window:GetConfigState()
+        local data = {}
+        for key, element in pairs(Window.ConfigElements) do
+            if element and not element.Destroyed and element.Get then
+                local ok, value = pcall(element.Get, element)
+                if ok then data[key] = value end
+            end
+        end
+        return data
+    end
+
     -- Applies {id -> value} onto every matching ID'd element that exposes :Set()
     function Window:SetState(data)
         data = data or {}
@@ -1408,6 +1456,169 @@ function Library:CreateWindow(options)
         end
 
         return Window._SavedState
+    end
+
+    --------------------------------------------------
+    -- v5.3: PERSISTENT CONFIG MANAGER
+    --------------------------------------------------
+
+    local HttpService = game:GetService("HttpService")
+    local CONFIG_FOLDER = "NebulaUI"
+    local CONFIG_PATH = CONFIG_FOLDER .. "/configs"
+
+    local function CanUseFileSystem()
+        return type(writefile) == "function" and type(readfile) == "function"
+            and type(isfile) == "function" and type(makefolder) == "function"
+            and type(isfolder) == "function"
+    end
+
+    local function EnsureConfigFolder()
+        if not CanUseFileSystem() then return false end
+        pcall(function()
+            if not isfolder(CONFIG_FOLDER) then makefolder(CONFIG_FOLDER) end
+            if not isfolder(CONFIG_PATH) then makefolder(CONFIG_PATH) end
+        end)
+        return true
+    end
+
+    local function EncodeConfigValue(value)
+        local kind = typeof(value)
+        if kind == "Color3" then
+            return {__type="Color3", r=value.R, g=value.G, b=value.B}
+        elseif kind == "UDim2" then
+            return {__type="UDim2", xs=value.X.Scale, xo=value.X.Offset, ys=value.Y.Scale, yo=value.Y.Offset}
+        elseif kind == "Vector2" then
+            return {__type="Vector2", x=value.X, y=value.Y}
+        elseif kind == "EnumItem" then
+            return {__type="EnumItem", enum=tostring(value.EnumType), name=value.Name}
+        elseif type(value) == "table" then
+            local out = {}
+            for k, v in pairs(value) do
+                out[tostring(k)] = EncodeConfigValue(v)
+            end
+            return out
+        end
+        return value
+    end
+
+    local function DecodeConfigValue(value)
+        if type(value) ~= "table" then return value end
+        if value.__type == "Color3" then
+            return Color3.new(tonumber(value.r) or 0, tonumber(value.g) or 0, tonumber(value.b) or 0)
+        elseif value.__type == "UDim2" then
+            return UDim2.new(tonumber(value.xs) or 0, tonumber(value.xo) or 0, tonumber(value.ys) or 0, tonumber(value.yo) or 0)
+        elseif value.__type == "Vector2" then
+            return Vector2.new(tonumber(value.x) or 0, tonumber(value.y) or 0)
+        elseif value.__type == "EnumItem" then
+            local enumName = tostring(value.enum or ""):match("Enum\.(.+)")
+            local enumType = enumName and Enum[enumName]
+            return enumType and enumType[value.name] or nil
+        end
+        local out = {}
+        for k, v in pairs(value) do out[k] = DecodeConfigValue(v) end
+        return out
+    end
+
+    function Window:GetConfigPath(name)
+        name = tostring(name or "default"):gsub("[^%w_%-]", "_")
+        if name == "" then name = "default" end
+        return CONFIG_PATH .. "/" .. name .. ".json"
+    end
+
+    function Window:SaveConfig(name)
+        name = tostring(name or "default")
+        if not EnsureConfigFolder() then
+            warn("[Nebula UI] Config saving requires writefile/readfile/isfile/makefolder support.")
+            return false
+        end
+        local payload = {
+            Version = Library.Version,
+            State = EncodeConfigValue(Window:GetState()),
+            Elements = EncodeConfigValue(Window:GetConfigState()),
+            Appearance = EncodeConfigValue(Window.Appearance),
+            Theme = EncodeConfigValue(Window:GetTheme()),
+            CustomThemeColors = EncodeConfigValue(Window:GetCustomThemeColors()),
+            MobileLayout = EncodeConfigValue({
+                Mode=Window.MobileLayout.Mode, Text=Window.MobileLayout.ButtonText,
+                Width=Window.MobileLayout.ButtonWidth, Height=Window.MobileLayout.ButtonHeight,
+                Transparency=Window.MobileLayout.ButtonTransparency, Position=Window.MobileLayout.OpenButtonPosition,
+                Preset=Window.MobileLayout.PositionPreset, Color=Window.MobileLayout.ButtonColor
+            })
+        }
+        local ok, encoded = pcall(HttpService.JSONEncode, HttpService, payload)
+        if not ok then warn("[Nebula UI] Config encode failed:", encoded); return false end
+        local path = Window:GetConfigPath(name)
+        local success, err = pcall(writefile, path, encoded)
+        if not success then warn("[Nebula UI] Config save failed:", err); return false end
+        Window._LastConfig = name
+        return true
+    end
+
+    function Window:LoadConfig(name)
+        if not CanUseFileSystem() then return false end
+        local path = Window:GetConfigPath(name or Window._LastConfig or "default")
+        if not isfile(path) then return false end
+        local ok, raw = pcall(readfile, path)
+        if not ok then warn("[Nebula UI] Config read failed:", raw); return false end
+        local decodedOk, data = pcall(HttpService.JSONDecode, HttpService, raw)
+        if not decodedOk or type(data) ~= "table" then warn("[Nebula UI] Config decode failed"); return false end
+        if data.State then Window:SetState(DecodeConfigValue(data.State)) end
+        if data.Elements then
+            local elements = DecodeConfigValue(data.Elements)
+            for key, value in pairs(elements) do
+                local element = Window.ConfigElements[key]
+                if element and element.Set then pcall(element.Set, element, value) end
+            end
+        end
+        if data.Theme then Window:SetTheme(DecodeConfigValue(data.Theme)) end
+        if data.Appearance then
+            local appearance = DecodeConfigValue(data.Appearance)
+            if appearance.CornerRadius then Window:SetCornerRadius(appearance.CornerRadius) end
+            if appearance.UIScale then Window:SetUIScale(appearance.UIScale) end
+            if appearance.TextSize then Window:SetTextSize(appearance.TextSize) end
+            if appearance.Transparency then Window:SetTransparency(appearance.Transparency) end
+            if appearance.AnimationSpeed then Window:SetAnimationSpeed(appearance.AnimationSpeed) end
+            Window:SetReducedMotion(appearance.ReducedMotion == true)
+        end
+        if data.CustomThemeColors then
+            for key, color in pairs(DecodeConfigValue(data.CustomThemeColors)) do
+                if typeof(color) == "Color3" then Window:SetThemeColor(key, color) end
+            end
+        end
+        if data.MobileLayout then
+            local mobile = DecodeConfigValue(data.MobileLayout)
+            if mobile.Mode then Window:SetMobileButtonMode(mobile.Mode) end
+            if mobile.Text then Window:SetMobileButtonText(mobile.Text) end
+            if mobile.Width and mobile.Height then Window:SetMobileButtonSize2(mobile.Width, mobile.Height) end
+            if mobile.Transparency then Window:SetMobileButtonTransparency(mobile.Transparency) end
+            if mobile.Color then Window:SetMobileButtonColor(mobile.Color) end
+            if mobile.Position then Window:SetMobileButtonPosition(mobile.Position) end
+            if mobile.Preset then Window:SetMobileButtonPreset(mobile.Preset) end
+        end
+        Window._LastConfig = name
+        return true
+    end
+
+    function Window:DeleteConfig(name)
+        if type(delfile) ~= "function" then return false end
+        local path = Window:GetConfigPath(name or Window._LastConfig or "default")
+        if not isfile(path) then return false end
+        local ok = pcall(delfile, path)
+        return ok
+    end
+
+    function Window:ListConfigs()
+        if type(listfiles) ~= "function" then return {} end
+        EnsureConfigFolder()
+        local result = {}
+        local ok, files = pcall(listfiles, CONFIG_PATH)
+        if not ok or type(files) ~= "table" then return result end
+        for _, path in ipairs(files) do
+            local name = tostring(path):match("([^/\\]+)%.json$")
+            if name then table.insert(result, name) end
+        end
+        table.sort(result)
+        return result
     end
 
     --------------------------------------------------
@@ -3843,11 +4054,11 @@ function Library:CreateWindow(options)
 
     MobileButton = Instance.new("TextButton")
     MobileButton.Name = "MobileButton"
-    MobileButton.Size = UDim2.fromOffset(50, 50)
-    MobileButton.Position = UDim2.new(1, -70, 1, -90)
-    MobileButton.BackgroundColor3 = Window.Theme.Accent
+    MobileButton.Size = UDim2.fromOffset(Window.MobileLayout.ButtonWidth, Window.MobileLayout.ButtonHeight)
+    MobileButton.Position = Window.MobileLayout.OpenButtonPosition
+    MobileButton.BackgroundColor3 = Window.MobileLayout.ButtonColor or Window.Theme.Accent
     MobileButton.BorderSizePixel = 0
-    MobileButton.Text = "N"
+    MobileButton.Text = Window.MobileLayout.ButtonText
     MobileButton.TextColor3 = Color3.fromRGB(255, 255, 255)
     MobileButton.TextSize = 20
     MobileButton.Font = Enum.Font.GothamBold
@@ -3856,7 +4067,9 @@ function Library:CreateWindow(options)
     MobileButton.Parent = ScreenGui
 
     Corner(MobileButton, 15)
-    BindTheme(MobileButton, "BackgroundColor3", "Accent")
+    if not Window.MobileLayout.ButtonColor then
+        BindTheme(MobileButton, "BackgroundColor3", "Accent")
+    end
 
     local mobilePulseCancelled = false
 
@@ -3869,15 +4082,45 @@ function Library:CreateWindow(options)
 
     Track(MobileButton.MouseButton1Click:Connect(function()
         Window:Toggle()
-        Tween(MobileButton, { Size = UDim2.fromOffset(46, 46) }, 0.1, Enum.EasingStyle.Back)
+        local w, h = Window.MobileLayout.ButtonWidth, Window.MobileLayout.ButtonHeight
+        Tween(MobileButton, { Size = UDim2.fromOffset(math.max(30, w - 4), math.max(28, h - 4)) }, 0.1, Enum.EasingStyle.Back)
         task.delay(0.1, function()
             if MobileButton and MobileButton.Parent and not Window.Destroyed then
-                Tween(MobileButton, { Size = UDim2.fromOffset(50, 50) }, 0.15, Enum.EasingStyle.Back)
+                Tween(MobileButton, { Size = UDim2.fromOffset(w, h) }, 0.15, Enum.EasingStyle.Back)
             end
         end)
     end))
 
-    MobileButton.Position = Window.MobileLayout.OpenButtonPosition
+    -- Apply initial mobile opener state directly here. The public setter
+    -- functions are declared later in the window API, so calling them here
+    -- would make startup order-dependent.
+    do
+        local positions = {
+            ["Bottom Right"] = UDim2.new(1, -16, 1, -90),
+            ["Bottom Left"] = UDim2.new(0, 16, 1, -90),
+            ["Top Right"] = UDim2.new(1, -16, 0, 80),
+            ["Top Left"] = UDim2.new(0, 16, 0, 80),
+            ["Top Center"] = UDim2.new(0.5, 0, 0, 80),
+            ["Bottom Center"] = UDim2.new(0.5, 0, 1, -90),
+        }
+        local preset = Window.MobileLayout.PositionPreset
+        local pos = positions[preset] or positions["Top Right"]
+        MobileButton.AnchorPoint = (preset:find("Center") and Vector2.new(0.5, 0)) or (preset:find("Right") and Vector2.new(1, 0)) or Vector2.new(0, 0)
+        MobileButton.Position = pos
+        Window.MobileLayout.OpenButtonPosition = pos
+
+        if Window.MobileLayout.Mode == "Watermark" then
+            MobileButton.BackgroundTransparency = math.min(Window.MobileLayout.ButtonTransparency + 0.08, 0.45)
+            MobileButton.TextSize = 11
+            local c = MobileButton:FindFirstChildOfClass("UICorner")
+            if c then c.CornerRadius = UDim.new(0, 10) end
+        else
+            MobileButton.TextSize = 20
+        end
+        local desired = Window.MobileLayout.ButtonText
+        local fits = (#desired <= 1) or (Window.MobileLayout.ButtonWidth >= (#desired * 8 + 28))
+        MobileButton.Text = fits and desired or "N"
+    end
     MobileButton:SetAttribute("NebulaMobileAction", "Open")
 
     local mobileDragging = false
@@ -3938,7 +4181,7 @@ function Library:CreateWindow(options)
     -- v4: RESPONSIVE LAYOUT
     --------------------------------------------------
 
-    Window.Responsive = options.Responsive == true
+    Window.Responsive = options.Responsive ~= false
     Window.IsMobile = false
     Window.Breakpoints = options.Breakpoints or {
         Mobile = 620,
@@ -3976,9 +4219,16 @@ function Library:CreateWindow(options)
 
         Content.Position = UDim2.fromOffset(SIDEBAR_WIDTH, 0)
         Content.Size = UDim2.new(1, -SIDEBAR_WIDTH, 1, 0)
+        SearchBox.Size = UDim2.fromOffset(172, 30)
+        SearchBox.Position = UDim2.new(1, -190, 0.5, -15)
+        searchIcon.Position = UDim2.new(1, -184, 0.5, -13)
+        CurrentTabLabel.Size = UDim2.new(1, -220, 1, 0)
 
         if not Window.Minimized then
             Main.Size = finalSize
+            if Window._UIScaleObject then
+                Window._UIScaleObject.Scale = Window.Appearance.UIScale
+            end
         end
     end
 
@@ -3996,9 +4246,29 @@ function Library:CreateWindow(options)
 
         if not Window.Minimized then
             local viewport = GetViewportSize()
-            local width = math.min(finalSize.X.Offset, math.max(viewport.X - Window.Breakpoints.ViewportPadding, Window.Breakpoints.MinWidth))
-            local height = math.min(finalSize.Y.Offset, math.max(viewport.Y - Window.Breakpoints.ViewportPadding, Window.Breakpoints.MinHeight))
+            local availableW = math.max(240, viewport.X - Window.Breakpoints.ViewportPadding)
+            local availableH = math.max(300, viewport.Y - Window.Breakpoints.ViewportPadding)
+            local width = finalSize.X.Offset
+            local height = finalSize.Y.Offset
             Main.Size = UDim2.fromOffset(width, height)
+
+            -- UIScale multiplies the final absolute size. On touch/small
+            -- displays the library automatically reduces the visual scale so
+            -- the whole menu fits instead of forcing the user to resize it.
+            if Window._UIScaleObject then
+                local baseW = math.max(1, finalSize.X.Offset)
+                local baseH = math.max(1, finalSize.Y.Offset)
+                local fitScale = math.min(1, availableW / baseW, availableH / baseH)
+                Window._UIScaleObject.Scale = math.min(Window.Appearance.UIScale, fitScale)
+            end
+
+            -- Mobile header: prevent the fixed desktop search field from
+            -- colliding with the current-tab title on narrow screens.
+            local searchWidth = math.clamp(width - 150, 104, 172)
+            SearchBox.Size = UDim2.fromOffset(searchWidth, 30)
+            SearchBox.Position = UDim2.new(1, -searchWidth - 10, 0.5, -15)
+            searchIcon.Position = UDim2.new(1, -searchWidth - 4, 0.5, -13)
+            CurrentTabLabel.Size = UDim2.new(1, -searchWidth - 36, 1, 0)
         end
     end
 
@@ -4124,7 +4394,88 @@ function Library:CreateWindow(options)
     function Window:SetMobileButtonSize(size)
         local n = math.clamp(tonumber(size) or 52, 36, 110)
         Window.MobileLayout.ButtonSize = n
+        Window.MobileLayout.ButtonWidth = n
+        Window.MobileLayout.ButtonHeight = n
         if MobileButton then MobileButton.Size = UDim2.fromOffset(n, n) end
+        return Window
+    end
+
+    function Window:SetMobileButtonSize2(width, height)
+        local w = math.clamp(tonumber(width) or 52, 36, 220)
+        local h = math.clamp(tonumber(height) or 52, 32, 110)
+        Window.MobileLayout.ButtonWidth = w
+        Window.MobileLayout.ButtonHeight = h
+        Window.MobileLayout.ButtonSize = math.min(w, h)
+        if MobileButton then MobileButton.Size = UDim2.fromOffset(w, h) end
+        return Window
+    end
+
+    function Window:SetMobileButtonText(text)
+        Window.MobileLayout.ButtonText = tostring(text or "N")
+        if MobileButton then
+            local desired = Window.MobileLayout.ButtonText
+            local fits = (#desired <= 1) or (Window.MobileLayout.ButtonWidth >= (#desired * 8 + 28))
+            MobileButton.Text = fits and desired or "N"
+        end
+        return Window
+    end
+
+    function Window:SetMobileButtonMode(mode)
+        mode = tostring(mode or "Button")
+        if mode ~= "Button" and mode ~= "Watermark" then mode = "Button" end
+        Window.MobileLayout.Mode = mode
+        if MobileButton then
+            MobileButton.BackgroundTransparency = mode == "Watermark" and math.min(Window.MobileLayout.ButtonTransparency + 0.08, 0.45) or Window.MobileLayout.ButtonTransparency
+            MobileButton.TextSize = mode == "Watermark" and 11 or 20
+            local mobileCorner = MobileButton:FindFirstChildOfClass("UICorner")
+            if mobileCorner then
+                mobileCorner.CornerRadius = UDim.new(0, mode == "Watermark" and 10 or 15)
+            end
+            if mode == "Watermark" and Window.MobileLayout.ButtonText == "N" then
+                Window.MobileLayout.ButtonText = "Nebula"
+                if Window.MobileLayout.ButtonWidth < 92 then
+                    Window.MobileLayout.ButtonWidth = 110
+                    Window.MobileLayout.ButtonHeight = 34
+                    MobileButton.Size = UDim2.fromOffset(110, 34)
+                end
+            end
+            Window:SetMobileButtonText(Window.MobileLayout.ButtonText)
+        end
+        return Window
+    end
+
+    function Window:SetMobileButtonColor(color)
+        if typeof(color) ~= "Color3" then return Window end
+        Window.MobileLayout.ButtonColor = color
+        Window._MobileButtonCustomColor = color
+        if MobileButton then MobileButton.BackgroundColor3 = color end
+        return Window
+    end
+
+    function Window:SetMobileButtonTransparency(value)
+        local n = math.clamp(tonumber(value) or 0.08, 0, 0.8)
+        Window.MobileLayout.ButtonTransparency = n
+        if MobileButton then MobileButton.BackgroundTransparency = n end
+        return Window
+    end
+
+    function Window:SetMobileButtonPreset(preset)
+        preset = tostring(preset or "Bottom Right")
+        local positions = {
+            ["Bottom Right"] = UDim2.new(1, -16, 1, -90),
+            ["Bottom Left"] = UDim2.new(0, 16, 1, -90),
+            ["Top Right"] = UDim2.new(1, -16, 0, 80),
+            ["Top Left"] = UDim2.new(0, 16, 0, 80),
+            ["Top Center"] = UDim2.new(0.5, 0, 0, 80),
+            ["Bottom Center"] = UDim2.new(0.5, 0, 1, -90),
+        }
+        local pos = positions[preset] or positions["Bottom Right"]
+        Window.MobileLayout.PositionPreset = preset
+        if MobileButton then
+            MobileButton.AnchorPoint = (preset:find("Center") and Vector2.new(0.5, 0)) or (preset:find("Right") and Vector2.new(1, 0)) or Vector2.new(0, 0)
+            MobileButton.Position = pos
+        end
+        Window.MobileLayout.OpenButtonPosition = pos
         return Window
     end
 
@@ -4289,6 +4640,9 @@ function Library:CreateWindow(options)
     function Window:SetUIScale(value)
         Window.Appearance.UIScale = math.clamp(tonumber(value) or 1, 0.75, 1.35)
         ApplyUIScale()
+        if Window.Responsive and Window.IsMobile then
+            UpdateResponsive()
+        end
         return Window
     end
 
@@ -4343,6 +4697,11 @@ function Library:CreateWindow(options)
         Window.Appearance.AnimationSpeed = 1
         Window.Appearance.ReducedMotion = false
         table.clear(Window._CustomThemeColors)
+        Window._MobileButtonCustomColor = nil
+        Window.MobileLayout.ButtonColor = nil
+        if Window:GetMobileButton() then
+            Window:GetMobileButton().BackgroundColor3 = (Library.Themes.Nebula or Window.Theme).Accent
+        end
         Window:SetTheme(CopyTheme(Window._OriginalTheme or Library.Themes.Nebula))
         ApplyCornerRadius()
         ApplyUIScale()
@@ -4448,6 +4807,85 @@ function Library:CreateWindow(options)
             Callback = function(value) Window:SetThemeColor("Text", value) end
         })
 
+        SettingsTab:AddSection("Mobile / Open Button")
+
+        SettingsTab:AddDropdown({
+            Name = "Open Button Style",
+            Values = {"Button", "Watermark"},
+            Default = Window.MobileLayout.Mode,
+            Callback = function(value) Window:SetMobileButtonMode(value) end
+        })
+
+        SettingsTab:AddTextbox({
+            Name = "Open Button Text",
+            Default = Window.MobileLayout.ButtonText,
+            Placeholder = "N or Nebula",
+            Callback = function(value) Window:SetMobileButtonText(value) end
+        })
+
+        SettingsTab:AddDropdown({
+            Name = "Open Button Position",
+            Values = {"Bottom Right", "Bottom Left", "Top Right", "Top Left", "Top Center", "Bottom Center"},
+            Default = Window.MobileLayout.PositionPreset,
+            Callback = function(value) Window:SetMobileButtonPreset(value) end
+        })
+
+        SettingsTab:AddSlider({
+            Name = "Button Width", Min = 36, Max = 220, Decimals = 0,
+            Default = Window.MobileLayout.ButtonWidth,
+            Callback = function(value) Window:SetMobileButtonSize2(value, Window.MobileLayout.ButtonHeight) end
+        })
+
+        SettingsTab:AddSlider({
+            Name = "Button Height", Min = 32, Max = 110, Decimals = 0,
+            Default = Window.MobileLayout.ButtonHeight,
+            Callback = function(value) Window:SetMobileButtonSize2(Window.MobileLayout.ButtonWidth, value) end
+        })
+
+        SettingsTab:AddSlider({
+            Name = "Button Transparency", Min = 0, Max = 0.8, Decimals = 2,
+            Default = Window.MobileLayout.ButtonTransparency,
+            Callback = function(value) Window:SetMobileButtonTransparency(value) end
+        })
+
+        SettingsTab:AddColorPicker({
+            Name = "Button Color",
+            Default = Window.MobileLayout.ButtonColor or Window.Theme.Accent,
+            Callback = function(value) Window:SetMobileButtonColor(value) end
+        })
+
+        SettingsTab:AddToggle({
+            Name = "Mobile Edit Mode",
+            Default = false,
+            Description = "Drag the open button directly on touch devices.",
+            Callback = function(value) Window:SetMobileEditMode(value) end
+        })
+
+        SettingsTab:AddSection("Configs")
+
+        SettingsTab:AddTextbox({
+            Name = "Config Name", Default = "default", Placeholder = "my_config",
+            Callback = function(value) Window._ConfigInputName = tostring(value or "default") end
+        })
+
+        SettingsTab:AddButton({
+            Name = "Save Config",
+            Callback = function()
+                local name = Window._ConfigInputName or "default"
+                Window:SaveConfig(name)
+                Window:Notify({Title="Nebula UI", Content="Config saved: " .. name, Type="Success", Duration=2.5})
+            end
+        })
+
+        SettingsTab:AddButton({
+            Name = "Load Config",
+            Callback = function()
+                local name = Window._ConfigInputName or "default"
+                local ok = Window:LoadConfig(name)
+                Window:Notify({Title="Nebula UI", Content=ok and ("Config loaded: " .. name) or ("Config not found: " .. name), Type=ok and "Success" or "Warning", Duration=2.5})
+            end
+        })
+
         SettingsTab:AddButton({
             Name = "Reset Appearance",
             Callback = function() Window:ResetAppearance() end
@@ -4458,6 +4896,9 @@ function Library:CreateWindow(options)
     ApplyUIScale()
     ApplyTextSize()
     ApplyTransparency()
+    if Window.Responsive then
+        UpdateResponsive()
+    end
 
     --------------------------------------------------
     -- v5: PLUGIN LOADING
@@ -4527,6 +4968,7 @@ function Library:CreateWindow(options)
 
         table.clear(Window.AllElements)
         table.clear(Window.ElementsByID)
+        table.clear(Window.ConfigElements)
         table.clear(Window._themeBinds)
         table.clear(Window._Groups)
         table.clear(Window._baseTextSizes)
