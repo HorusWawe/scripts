@@ -52,8 +52,8 @@ local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 -- DUPLICATE CLEANUP
 --------------------------------------------------
 
-local GUI_NAME = "__NebulaUI_v4"
-local ACTIVE_WINDOW_KEY = "__NebulaUI_v4_ACTIVE_WINDOW"
+local GUI_NAME = "__NebulaUI_v5"
+local ACTIVE_WINDOW_KEY = "__NebulaUI_v5_ACTIVE_WINDOW"
 
 local previousWindow = rawget(_G, ACTIVE_WINDOW_KEY)
 if previousWindow and type(previousWindow.Unload) == "function" then
@@ -312,20 +312,28 @@ end
 -- HELPERS
 --------------------------------------------------
 
+local CURRENT_APPEARANCE = nil
+
 local function Tween(instance, properties, duration, style, direction)
-    local info = TweenInfo.new(
-        duration or 0.25,
-        style or Enum.EasingStyle.Quint,
-        direction or Enum.EasingDirection.Out
-    )
+    if not instance then return nil end
+    local base = tonumber(duration) or 0.25
+    if CURRENT_APPEARANCE then
+        if CURRENT_APPEARANCE.ReducedMotion then base = 0 else base = base / math.max(0.05, tonumber(CURRENT_APPEARANCE.AnimationSpeed) or 1) end
+    end
+    if base <= 0 then
+        for property, value in pairs(properties or {}) do pcall(function() instance[property] = value end) end
+        return nil
+    end
+    local info = TweenInfo.new(base, style or Enum.EasingStyle.Quint, direction or Enum.EasingDirection.Out)
 
     local tween = TweenService:Create(instance, info, properties)
     tween:Play()
     return tween
 end
 
-local function Corner(parent, radius)
+local function Corner(parent, radius, keepRadius)
     local corner = Instance.new("UICorner")
+    if keepRadius then corner:SetAttribute("NebulaKeepRadius", true) end
     corner.CornerRadius = UDim.new(0, radius or 8)
     corner.Parent = parent
     return corner
@@ -428,8 +436,12 @@ function Library:CreateWindow(options)
         ReducedMotion = options.ReducedMotion == true,
     }
     Window._baseTextSizes = {}
+    Window._OriginalTheme = {}
+    for key, value in pairs(self.Themes[self.CurrentTheme] or self.Themes.Nebula or {}) do Window._OriginalTheme[key] = value end
+    Window._CustomThemeColors = {}
 
     Window.State = self:CreateState()
+    CURRENT_APPEARANCE = Window.Appearance
 
     -- v4: Window.Size read before the open-animation section overwrites Main's
     -- Size, so responsive logic and the open animation share one source of truth.
@@ -1057,6 +1069,8 @@ function Library:CreateWindow(options)
                 end
 
                 if root then
+                    Window._baseTextSizes[root] = nil
+                    for _, descendant in ipairs(root:GetDescendants()) do Window._baseTextSizes[descendant] = nil end
                     root:Destroy()
                 end
 
@@ -1097,6 +1111,10 @@ function Library:CreateWindow(options)
         end
 
         -- StateKey is now supported consistently by every settable element.
+        if options.StateKey and (not Element.Get or not Element.Set) then
+            warn("[Nebula UI] StateKey requires both Get and Set methods:", tostring(options.StateKey), tostring(Element.Name))
+        end
+
         if options.StateKey and Element.Get and Element.Set then
             local stateKey = tostring(options.StateKey)
             local ok, current = pcall(Element.Get, Element)
@@ -1256,6 +1274,7 @@ function Library:CreateWindow(options)
         local Tab = {}
         Tab.Name = name or "Tab"
         Tab.Elements = {}
+        Tab.Containers = {}
 
         --------------------------------------------------
         -- TAB BUTTON
@@ -1341,10 +1360,6 @@ function Library:CreateWindow(options)
 
         table.insert(Window.Tabs, Tab)
 
-        if #Window.Tabs == 1 then
-            Window:SelectTab(Tab)
-        end
-
         Track(Button.MouseButton1Click:Connect(function()
             Window:SelectTab(Tab)
         end))
@@ -1361,6 +1376,21 @@ function Library:CreateWindow(options)
                     local name = string.lower(tostring(element.Name or ""))
                     local match = query == "" or string.find(name, query, 1, true) ~= nil
                     element.Root.Visible = match
+                end
+            end
+
+            for _, container in ipairs(Tab.Containers or {}) do
+                if container.Root and not container.Destroyed then
+                    local containerMatch = query == "" or string.find(string.lower(tostring(container.Name or "")), query, 1, true) ~= nil
+                    local childMatch = false
+                    for _, child in ipairs(container._Elements or {}) do
+                        if child.Root and child.Root.Parent then
+                            local match = query == "" or string.find(string.lower(child.Name), query, 1, true) ~= nil
+                            child.Root.Visible = match
+                            childMatch = childMatch or match
+                        end
+                    end
+                    container.Root.Visible = query == "" or containerMatch or childMatch
                 end
             end
 
@@ -2719,7 +2749,9 @@ function Library:CreateWindow(options)
             local pickerConnections = {}
 
             local function TrackPicker(connection)
+                if not connection then return nil end
                 table.insert(pickerConnections, connection)
+                Track(connection)
                 return connection
             end
 
@@ -3038,7 +3070,7 @@ function Library:CreateWindow(options)
                     end
                 end))
 
-                Track(UserInputService.InputChanged:Connect(function(i)
+                TrackPicker(UserInputService.InputChanged:Connect(function(i)
                     if i.UserInputType == Enum.UserInputType.MouseMovement
                     or i.UserInputType == Enum.UserInputType.Touch then
                         if draggingSV then
@@ -3049,7 +3081,7 @@ function Library:CreateWindow(options)
                     end
                 end))
 
-                Track(UserInputService.InputEnded:Connect(function(i)
+                TrackPicker(UserInputService.InputEnded:Connect(function(i)
                     if i.UserInputType == Enum.UserInputType.MouseButton1
                     or i.UserInputType == Enum.UserInputType.Touch then
                         draggingSV = false
@@ -3154,6 +3186,8 @@ function Library:CreateWindow(options)
 
             Container.Root = frame
             Container.Destroyed = false
+            Container._Elements = {}
+            table.insert(Tab.Containers, Container)
 
             function Container:SetVisible(visible)
                 if frame then
@@ -3178,6 +3212,7 @@ function Library:CreateWindow(options)
                 label.Size = UDim2.new(1, 0, 0, 22)
                 label.TextColor3 = Window.Theme.Text
                 BindTheme(label, "TextColor3", "Text")
+                table.insert(Container._Elements, {Name = tostring(text or ""), Root = label})
                 return label
             end
 
@@ -3203,6 +3238,9 @@ function Library:CreateWindow(options)
                     frame:Destroy()
                     frame = nil
                     Container.Root = nil
+                end
+                for i = #Tab.Containers, 1, -1 do
+                    if Tab.Containers[i] == Container then table.remove(Tab.Containers, i); break end
                 end
             end
 
@@ -3746,9 +3784,9 @@ function Library:CreateWindow(options)
     end
 
     function Window:SetMobileButtonVisible(value)
-        pcall(function()
+        if MobileButton then
             MobileButton.Visible = UserInputService.TouchEnabled and value == true and not Main.Visible
-        end)
+        end
     end
 
     --------------------------------------------------
@@ -3766,7 +3804,7 @@ function Library:CreateWindow(options)
     local function ApplyCornerRadius()
         local radius = math.max(0, tonumber(Window.Appearance.CornerRadius) or 12)
         for _, instance in ipairs(ScreenGui:GetDescendants()) do
-            if instance:IsA("UICorner") then
+            if instance:IsA("UICorner") and not instance:GetAttribute("NebulaKeepRadius") then
                 pcall(function()
                     instance.CornerRadius = UDim.new(0, radius)
                 end)
@@ -3788,10 +3826,10 @@ function Library:CreateWindow(options)
         local multiplier = math.clamp(tonumber(Window.Appearance.TextSize) or 1, 0.8, 1.25)
         for _, instance in ipairs(ScreenGui:GetDescendants()) do
             if instance:IsA("TextLabel") or instance:IsA("TextButton") or instance:IsA("TextBox") then
-                local base = instance:GetAttribute("NebulaBaseTextSize")
+                local base = Window._baseTextSizes[instance]
                 if type(base) ~= "number" then
                     base = instance.TextSize
-                    pcall(function() instance:SetAttribute("NebulaBaseTextSize", base) end)
+                    Window._baseTextSizes[instance] = base
                 end
                 pcall(function() instance.TextSize = math.max(8, math.floor(base * multiplier + 0.5)) end)
             end
@@ -3843,15 +3881,12 @@ function Library:CreateWindow(options)
     end
 
     function Window:SetAccentColor(color)
-        if typeof(color) ~= "Color3" then return Window end
-        local theme = CopyTheme(Window.Theme)
-        theme.Accent = color
-        Window:SetTheme(theme)
-        return Window
+        return Window:SetThemeColor("Accent", color)
     end
 
     function Window:SetThemeColor(key, color)
         if type(key) ~= "string" or typeof(color) ~= "Color3" then return Window end
+        Window._CustomThemeColors[key] = color
         local theme = CopyTheme(Window.Theme)
         theme[key] = color
         Window:SetTheme(theme)
@@ -3862,6 +3897,10 @@ function Library:CreateWindow(options)
         return CopyTheme(Window.Theme)
     end
 
+    function Window:GetCustomThemeColors()
+        return CopyTheme(Window._CustomThemeColors)
+    end
+
     function Window:ResetAppearance()
         Window.Appearance.CornerRadius = 12
         Window.Appearance.UIScale = 1
@@ -3869,7 +3908,8 @@ function Library:CreateWindow(options)
         Window.Appearance.Transparency = 0
         Window.Appearance.AnimationSpeed = 1
         Window.Appearance.ReducedMotion = false
-        Window:SetTheme("Nebula")
+        table.clear(Window._CustomThemeColors)
+        Window:SetTheme(CopyTheme(Window._OriginalTheme or Library.Themes.Nebula))
         ApplyCornerRadius()
         ApplyUIScale()
         ApplyTextSize()
@@ -3877,34 +3917,22 @@ function Library:CreateWindow(options)
         return Window
     end
 
-    Window.Tween = function(a, b, c, d, e)
-        local instance, properties, duration, style, direction = b, c, d, e, nil
-        if a == Window then
-            instance, properties, duration, style, direction = b, c, d, e, nil
-        else
-            instance, properties, duration, style, direction = a, b, c, d, e
-        end
-        local base = tonumber(duration) or 0.25
-        if Window.Appearance.ReducedMotion then
-            base = 0
-        else
-            base = base / math.max(0.05, Window.Appearance.AnimationSpeed)
-        end
-        if base <= 0 then
-            for property, value in pairs(properties or {}) do
-                pcall(function() instance[property] = value end)
-            end
-            return nil
-        end
-        return Tween(instance, properties, base, style, direction)
+    Window.Tween = function(a, b, c, d, e, f)
+        local instance, properties, duration, style, direction
+        if a == Window then instance, properties, duration, style, direction = b, c, d, e, f
+        else instance, properties, duration, style, direction = a, b, c, d, e end
+        return Tween(instance, properties, duration, style, direction)
     end
 
     --------------------------------------------------
-    -- v5: SETTINGS TAB
+    -- v5: DEFAULT THEME / SETTINGS TAB
     --------------------------------------------------
 
+    Window:SetTheme(options.Theme or "Nebula")
+    Library.CurrentTheme = Window.Theme
+
     if options.ShowSettings ~= false then
-        local SettingsTab = Window:AddTab("Settings", "⚙")
+        local SettingsTab = Window:AddTab("Settings")
         SettingsTab:AddSection("Appearance")
 
         SettingsTab:AddDropdown({
@@ -4059,6 +4087,8 @@ function Library:CreateWindow(options)
         table.clear(Window.ElementsByID)
         table.clear(Window._themeBinds)
         table.clear(Window._Groups)
+        table.clear(Window._baseTextSizes)
+        if CURRENT_APPEARANCE == Window.Appearance then CURRENT_APPEARANCE = nil end
 
         if immediate then
             pcall(function()
@@ -4107,12 +4137,6 @@ function Library:CreateWindow(options)
     end)
 
     --------------------------------------------------
-    -- DEFAULT THEME
-    --------------------------------------------------
-
-    Window:SetTheme(options.Theme or "Nebula")
-
-    --------------------------------------------------
     -- v5: LOADING SCREEN
     --------------------------------------------------
 
@@ -4132,7 +4156,7 @@ function Library:CreateWindow(options)
         panel.BackgroundColor3 = Window.Theme.Secondary
         panel.BorderSizePixel = 0
         panel.Parent = overlay
-        Corner(panel, Window.Appearance.CornerRadius)
+        Corner(panel, Window.Appearance.CornerRadius, true)
         local panelStroke = Stroke(panel, Window.Theme.Border, 0.35)
         BindTheme(panel, "BackgroundColor3", "Secondary")
         BindTheme(panelStroke, "Color", "Border")
@@ -4197,10 +4221,20 @@ function Library:CreateWindow(options)
             Tween(panel, {BackgroundTransparency = 1}, Window.Appearance.ReducedMotion and 0 or 0.18)
             task.wait(Window.Appearance.ReducedMotion and 0.02 or 0.24)
             if overlay and overlay.Parent then overlay:Destroy() end
+            for i = #Window._themeBinds, 1, -1 do
+                local binding = Window._themeBinds[i]
+                if not binding or not binding.Instance or not binding.Instance.Parent then table.remove(Window._themeBinds, i) end
+            end
         end)
     end
 
-    ShowLoadingScreen()
+    if options.ShowLoading ~= false then
+        ShowLoadingScreen()
+    end
+
+    if not Window.ActiveTab and Window.Tabs[1] then
+        Window:SelectTab(Window.Tabs[1])
+    end
 
     --------------------------------------------------
     -- RETURN
