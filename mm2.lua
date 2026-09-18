@@ -91,6 +91,20 @@ local State = {
     MobileESP = true,
     MobileVFX = true,
     MobileEdit = false,
+
+    V6TargetHUD = true,
+    V6Watermark = true,
+    V6VisualIntensity = 1,
+    V6VisualDistance = 120,
+    V6TargetMode = "Murderer",
+    V6SelectedPlayer = "",
+    V6FlingPower = 100,
+    V6FlingKey = "F",
+    V6AnimationPack = "Zombie",
+    V6AnimationEnabled = false,
+    V6TouchFling = false,
+    V6CameraTilt = false,
+    V6LastGrounded = true,
 }
 
 --========================================================--
@@ -157,18 +171,16 @@ local function GetRoles()
         local character = player.Character
         local backpack = player:FindFirstChild("Backpack")
 
-        if character then
-            local knife = character:FindFirstChild("Knife")
-                or (backpack and backpack:FindFirstChild("Knife"))
+        local knife = (character and character:FindFirstChild("Knife"))
+            or (backpack and backpack:FindFirstChild("Knife"))
 
-            local gun = character:FindFirstChild("Gun")
-                or (backpack and backpack:FindFirstChild("Gun"))
+        local gun = (character and character:FindFirstChild("Gun"))
+            or (backpack and backpack:FindFirstChild("Gun"))
 
-            if knife then
-                roles.Murderer = player
-            elseif gun then
-                roles.Sheriff = player
-            end
+        if knife then
+            roles.Murderer = player
+        elseif gun then
+            roles.Sheriff = player
         end
     end
 
@@ -243,7 +255,7 @@ end
 local CombatTab = Window:AddTab("Combat", "rbxassetid://6034509993")
 local VisualsTab = Window:AddTab("Visuals", "rbxassetid://6034509993")
 local MovementTab = Window:AddTab("Movement", "rbxassetid://6034509993")
-local EffectsTab = Window:AddTab("Effects", "rbxassetid://6034509993")
+local EffectsTab = VisualsTab -- v6: effects render inside Visuals
 local PlayersTab = Window:AddTab("Players", "rbxassetid://6034509993")
 local MiscTab = Window:AddTab("Misc", "rbxassetid://6034509993")
 
@@ -364,8 +376,9 @@ KnifeSection:AddSlider({
 
 local RageSection = CombatTab:AddSection("Target / Rage")
 
-RageSection:AddLabel("Targeting and prediction are client-side helpers.")
-RageSection:AddLabel("Server-side hit validation cannot be bypassed universally.")
+RageSection:AddLabel("Aim Lock / Knife Aim use the current target + prediction.")
+RageSection:AddLabel("Silent Aim selects a target but does not rewrite game remotes.")
+RageSection:AddLabel("Wall Check Ignore cannot universally bypass server validation.")
 
 --========================================================--
 --                   SHERIFF AIM / TARGET FX              --
@@ -380,33 +393,114 @@ AimTargetHighlight.OutlineColor = Color3.fromRGB(255, 255, 255)
 AimTargetHighlight.Enabled = false
 TrackInstance(AimTargetHighlight)
 
-local function UpdateAim()
-    local murderer = GetMurderer()
-    local localCharacter = GetCharacter()
-    local gun = localCharacter and localCharacter:FindFirstChild("Gun")
+local CurrentCombatTarget = nil
 
-    if not murderer or not gun or not IsAlive(murderer) then
+local function GetBestTarget(players, fov, maxDistance)
+    local center = Vector2.new(Camera.ViewportSize.X * 0.5, Camera.ViewportSize.Y * 0.5)
+    local bestPlayer = nil
+    local bestScore = math.huge
+    local localRoot = GetRoot()
+
+    for _, player in ipairs(players) do
+        if player ~= LocalPlayer and IsAlive(player) then
+            local part = GetTargetPart(player)
+            local root = GetTargetRoot(player)
+            if part and root then
+                local allowedDistance = true
+                if maxDistance and localRoot then
+                    allowedDistance = (root.Position - localRoot.Position).Magnitude <= maxDistance
+                end
+
+                if allowedDistance then
+                    local viewport, visible = Camera:WorldToViewportPoint(part.Position)
+                    if visible and viewport.Z > 0 then
+                        local screenDistance = (Vector2.new(viewport.X, viewport.Y) - center).Magnitude
+                        if screenDistance <= (fov or math.huge) and screenDistance < bestScore then
+                            bestScore = screenDistance
+                            bestPlayer = player
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return bestPlayer
+end
+
+local function GetSheriffTarget()
+    local murderer = GetMurderer()
+    if murderer and IsAlive(murderer) and IsInFOV(murderer, State.SheriffFOV) then
+        return murderer
+    end
+    return nil
+end
+
+local function GetKnifeTarget()
+    return GetBestTarget(Players:GetPlayers(), State.KnifeFOV, State.ThrowDistance)
+end
+
+local function UpdateAim()
+    local character = GetCharacter()
+    local gun = character and character:FindFirstChild("Gun")
+    local knife = character and character:FindFirstChild("Knife")
+    local target = nil
+
+    if gun and (State.SheriffAim or State.SilentAim) then
+        target = GetSheriffTarget()
+    elseif knife and (State.KnifeAim or State.KnifeThrowAura) then
+        target = GetKnifeTarget()
+    end
+
+    CurrentCombatTarget = target
+
+    if not target then
         AimTargetHighlight.Enabled = false
         return
     end
 
-    local targetPart = GetTargetPart(murderer)
+    local targetPart = GetTargetPart(target)
     if not targetPart then
         AimTargetHighlight.Enabled = false
         return
     end
 
-    local predicted = PredictPosition(murderer, State.AimPrediction)
+    local predicted = PredictPosition(target, State.AimPrediction)
 
-    if State.SheriffAim and IsInFOV(murderer, State.SheriffFOV) then
+    -- Sheriff Aim and Knife Throw Aim are camera-side assists.
+    -- Silent Aim remains a target-selection helper; it does not hook/remap
+    -- game remotes or bypass server-side shot validation.
+    if State.SheriffAim and gun then
+        Camera.CFrame = CFrame.new(Camera.CFrame.Position, predicted or targetPart.Position)
+    elseif State.KnifeAim and knife then
         Camera.CFrame = CFrame.new(Camera.CFrame.Position, predicted or targetPart.Position)
     end
 
-    AimTargetHighlight.Adornee = murderer.Character
-    AimTargetHighlight.Enabled = State.SilentAim or State.KnifeAim
+    AimTargetHighlight.Adornee = target.Character
+    AimTargetHighlight.FillColor = (gun and Color3.fromRGB(255, 70, 70)) or Color3.fromRGB(196, 105, 255)
+    AimTargetHighlight.Enabled = State.SilentAim or State.KnifeAim or State.KnifeThrowAura
 end
 
 TrackConnection(RunService.RenderStepped:Connect(UpdateAim))
+
+-- Target highlighting for melee/throw helpers. This makes the toggles
+-- useful without pretending they can force server-authoritative hits.
+TrackConnection(RunService.Heartbeat:Connect(function()
+    if not (State.KillAura or State.KnifeThrowAura) then
+        return
+    end
+
+    local target = GetBestTarget(Players:GetPlayers(), 9999, State.KillAura and State.AuraDistance or State.ThrowDistance)
+    if target and IsAlive(target) then
+        CurrentCombatTarget = target
+        AimTargetHighlight.Adornee = target.Character
+        AimTargetHighlight.FillColor = State.KillAura and Color3.fromRGB(255, 55, 95) or Color3.fromRGB(196, 105, 255)
+        AimTargetHighlight.Enabled = State.AuraTargetESP
+    elseif not (State.SilentAim or State.KnifeAim) then
+        AimTargetHighlight.Enabled = false
+        CurrentCombatTarget = nil
+    end
+end))
 
 --========================================================--
 --                         VISUALS                        --
@@ -1393,10 +1487,15 @@ end
 CacheNoclipParts(GetCharacter())
 
 TrackConnection(RunService.Stepped:Connect(function()
+    local character = GetCharacter()
+    if not character then
+        return
+    end
+
     if State.Noclip then
-        for _, part in ipairs(NoclipParts) do
-            if part and part.Parent then
-                part.CanCollide = false
+        for _, part in ipairs(character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                pcall(function() part.CanCollide = false end)
             end
         end
     end
@@ -3218,11 +3317,17 @@ task.spawn(function()
                 break
             end
 
-            if coin:IsA("BasePart")
-                and (coin.Name == "Coin_Container" or coin.Name == "Coin_Server") then
+            if coin:IsA("BasePart") then
+                local name = string.lower(coin.Name)
+                local looksLikeCoin = name == "coin_container"
+                    or name == "coin_server"
+                    or name == "coin"
+                    or string.find(name, "coin", 1, true) ~= nil
 
-                root.CFrame = coin.CFrame + Vector3.new(0, 2, 0)
-                task.wait(0.25)
+                if looksLikeCoin and coin:IsDescendantOf(container) then
+                    root.CFrame = coin.CFrame + Vector3.new(0, 2, 0)
+                    task.wait(0.2)
+                end
             end
         end
     end
@@ -3370,6 +3475,942 @@ end
 
 Window:Notify({
     Title = "Nebula Hub",
-    Content = "MM2 v5.6 loaded — expanded ESP, HUD and VFX.",
+    Content = "MM2 v6 Global booted — core systems preserved.",
     Duration = 5
 })
+
+
+--========================================================--
+--                 NEBULA V6 GLOBAL UPDATE                --
+--   V6 is isolated so one optional feature cannot kill    --
+--   the working v5.6 core/UI during startup.              --
+--========================================================--
+
+task.spawn(function()
+    local ok, err = xpcall(function()
+    local V6 = {
+        WingScale = 1,
+        WingOffset = 0.45,
+        WingStyle = "Feather",
+        NameSize = 14,
+        AirControl = 0.35,
+        Momentum = 0.35,
+        Visual = {},
+        Combat = {},
+        Movement = {},
+        FX = {},
+        Connections = {},
+        Instances = {},
+        Tracks = {},
+    }
+
+    local function V6TrackConnection(c)
+        if c then table.insert(V6.Connections, c) end
+        return c
+    end
+
+    local function V6Track(instance)
+        if instance then table.insert(V6.Instances, instance) end
+        return instance
+    end
+
+    local function V6Destroy(x)
+        if x then pcall(function() x:Destroy() end) end
+    end
+
+    local function V6Root()
+        local c = LocalPlayer.Character
+        return c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("UpperTorso") or c:FindFirstChild("Torso"))
+    end
+
+    local function V6Humanoid()
+        local c = LocalPlayer.Character
+        return c and c:FindFirstChildOfClass("Humanoid")
+    end
+
+    local function V6Alive(player)
+        local c = player and player.Character
+        local h = c and c:FindFirstChildOfClass("Humanoid")
+        return h and h.Health > 0
+    end
+
+    local function V6TargetPlayer()
+        local mode = State.V6TargetMode
+        if mode == "Selected Player" and State.V6SelectedPlayer ~= "" then
+            local p = Players:FindFirstChild(State.V6SelectedPlayer)
+            if V6Alive(p) then return p end
+        end
+        if mode == "Sheriff" then
+            local roles = GetRoles()
+            if roles and V6Alive(roles.Sheriff) then return roles.Sheriff end
+        elseif mode == "Murderer" then
+            local roles = GetRoles()
+            if roles and V6Alive(roles.Murderer) then return roles.Murderer end
+        end
+        local root = V6Root()
+        if not root then return nil end
+        local best, bestDist = nil, State.V6VisualDistance
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and V6Alive(p) then
+                local pr = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+                if pr then
+                    local d = (root.Position - pr.Position).Magnitude
+                    if d < bestDist then best, bestDist = p, d end
+                end
+            end
+        end
+        return best
+    end
+
+    --========================================================--
+    --                       WATERMARK                        --
+    --========================================================--
+
+    local V6HUD = Instance.new("ScreenGui")
+    V6HUD.Name = "NebulaV6HUD"
+    V6HUD.ResetOnSpawn = false
+    V6HUD.IgnoreGuiInset = true
+    do
+        local parent
+        pcall(function()
+            if type(gethui) == "function" then
+                parent = gethui()
+            end
+        end)
+        if not parent then
+            pcall(function() parent = game:GetService("CoreGui") end)
+        end
+        if not parent then
+            parent = LocalPlayer:FindFirstChildOfClass("PlayerGui") or LocalPlayer:WaitForChild("PlayerGui")
+        end
+        V6HUD.Parent = parent
+    end
+    V6Track(V6HUD)
+
+    local Watermark = Instance.new("Frame")
+    Watermark.Name = "Watermark"
+    Watermark.AnchorPoint = Vector2.new(0.5, 0)
+    Watermark.Position = UDim2.new(0.5, 0, 0, 12)
+    Watermark.Size = UDim2.fromOffset(310, 42)
+    Watermark.BackgroundColor3 = Color3.fromRGB(17, 12, 29)
+    Watermark.BackgroundTransparency = 0.08
+    Watermark.Parent = V6HUD
+    V6Track(Watermark)
+    local wmCorner = Instance.new("UICorner", Watermark)
+    wmCorner.CornerRadius = UDim.new(0, 14)
+    local wmStroke = Instance.new("UIStroke", Watermark)
+    wmStroke.Thickness = 1.2
+    wmStroke.Transparency = 0.18
+    wmStroke.Color = Color3.fromRGB(165, 90, 255)
+    local wmGrad = Instance.new("UIGradient", Watermark)
+    wmGrad.Rotation = 15
+    wmGrad.Color = ColorSequence.new({ColorSequenceKeypoint.new(0, Color3.fromRGB(24,16,40)), ColorSequenceKeypoint.new(0.5, Color3.fromRGB(51,24,79)), ColorSequenceKeypoint.new(1, Color3.fromRGB(20,14,34))})
+    local wmText = Instance.new("TextLabel", Watermark)
+    wmText.BackgroundTransparency = 1
+    wmText.Position = UDim2.fromOffset(14, 3)
+    wmText.Size = UDim2.fromOffset(282, 36)
+    wmText.Font = Enum.Font.GothamBold
+    wmText.TextSize = 15
+    wmText.TextColor3 = Color3.fromRGB(240, 226, 255)
+    wmText.TextStrokeTransparency = 0.75
+    wmText.Text = "NEBULA  •  FPS --  •  PING --"
+
+    local function V6GetFPS()
+        return math.floor(1 / math.max(RunService.RenderStepped:Wait(), 1/240))
+    end
+
+    local fpsCounter, fpsTimer = 0, os.clock()
+    V6TrackConnection(RunService.RenderStepped:Connect(function(dt)
+        fpsCounter += 1
+        if os.clock() - fpsTimer >= 0.5 then
+            local fps = math.floor(fpsCounter / (os.clock() - fpsTimer))
+            fpsCounter, fpsTimer = 0, os.clock()
+            local ping = "--"
+            pcall(function()
+                local stats = game:GetService("Stats")
+                local network = stats:FindFirstChild("Network")
+                local server = network and network:FindFirstChild("ServerStatsItem")
+                local dataPing = server and server:FindFirstChild("Data Ping")
+                if dataPing then ping = tostring(math.floor(dataPing:GetValue())) end
+            end)
+            wmText.Text = string.format("NEBULA  •  %d FPS  •  %s ms", fps, ping)
+        end
+        Watermark.Visible = State.V6Watermark
+    end))
+
+    --========================================================--
+    --                       TARGET HUD                       --
+    --========================================================--
+
+    local TargetHUD = Instance.new("Frame")
+    TargetHUD.Name = "TargetHUD"
+    TargetHUD.AnchorPoint = Vector2.new(0.5, 0.5)
+    TargetHUD.Position = UDim2.new(0.58, 0, 0.63, 0)
+    TargetHUD.Size = UDim2.fromOffset(250, 78)
+    TargetHUD.BackgroundColor3 = Color3.fromRGB(16, 12, 25)
+    TargetHUD.BackgroundTransparency = 0.1
+    TargetHUD.Visible = false
+    TargetHUD.Parent = V6HUD
+    V6Track(TargetHUD)
+    local thCorner = Instance.new("UICorner", TargetHUD)
+    thCorner.CornerRadius = UDim.new(0, 16)
+    local thStroke = Instance.new("UIStroke", TargetHUD)
+    thStroke.Thickness = 1.4
+    thStroke.Color = Color3.fromRGB(170, 80, 255)
+    local thName = Instance.new("TextLabel", TargetHUD)
+    thName.BackgroundTransparency = 1
+    thName.Position = UDim2.fromOffset(14, 8)
+    thName.Size = UDim2.fromOffset(222, 26)
+    thName.Font = Enum.Font.GothamBold
+    thName.TextSize = 17
+    thName.TextXAlignment = Enum.TextXAlignment.Left
+    thName.TextColor3 = Color3.fromRGB(250, 240, 255)
+    local thInfo = Instance.new("TextLabel", TargetHUD)
+    thInfo.BackgroundTransparency = 1
+    thInfo.Position = UDim2.fromOffset(14, 36)
+    thInfo.Size = UDim2.fromOffset(222, 25)
+    thInfo.Font = Enum.Font.Gotham
+    thInfo.TextSize = 12
+    thInfo.TextXAlignment = Enum.TextXAlignment.Left
+    thInfo.TextColor3 = Color3.fromRGB(190, 165, 215)
+
+    V6TrackConnection(RunService.RenderStepped:Connect(function()
+        if not State.V6TargetHUD then
+            TargetHUD.Visible = false
+            return
+        end
+        local target = V6TargetPlayer()
+        local root = V6Root()
+        if target and root and target.Character then
+            local tr = target.Character:FindFirstChild("HumanoidRootPart")
+            local hum = target.Character:FindFirstChildOfClass("Humanoid")
+            if tr then
+                local dist = (root.Position - tr.Position).Magnitude
+                local role = "PLAYER"
+                local roles = GetRoles()
+                if roles and roles.Murderer == target then role = "MURDERER" end
+                if roles and roles.Sheriff == target then role = "SHERIFF" end
+                thName.Text = target.DisplayName .. "  •  " .. role
+                thInfo.Text = string.format("%d studs  •  HP %d  •  TRIGGERED", math.floor(dist), math.floor(hum and hum.Health or 0))
+                TargetHUD.Visible = true
+            else
+                TargetHUD.Visible = false
+            end
+        else
+            TargetHUD.Visible = false
+        end
+    end))
+
+    --========================================================--
+    --                 GUN ESP / GRAB GUN                    --
+    --========================================================--
+
+    local GunESPObjects = {}
+    local GunGrabState = {Auto = false}
+
+    local function V6FindGun()
+        local candidates = {workspace:FindFirstChild("GunDrop", true), workspace:FindFirstChild("DroppedGun", true), workspace:FindFirstChild("Gun", true)}
+        for _, x in ipairs(candidates) do
+            if x and (x:IsA("BasePart") or x:IsA("Model")) then return x end
+        end
+        for _, x in ipairs(workspace:GetDescendants()) do
+            local n = string.lower(x.Name)
+            if (n == "gundrop" or n == "droppeddrop" or n == "droppeddgun" or n == "gun") and (x:IsA("BasePart") or x:IsA("Model")) then
+                return x
+            end
+        end
+    end
+
+    local function V6GunPart(g)
+        if not g then return nil end
+        if g:IsA("BasePart") then return g end
+        return g.PrimaryPart or g:FindFirstChildWhichIsA("BasePart", true)
+    end
+
+    local function V6UpdateGunESP()
+        for g, obj in pairs(GunESPObjects) do
+            if not g or not g.Parent then
+                V6Destroy(obj.Highlight); V6Destroy(obj.Billboard); GunESPObjects[g] = nil
+            end
+        end
+        if not State.DropGunESP then return end
+        local gun = V6FindGun()
+        local part = V6GunPart(gun)
+        if not part then return end
+        if not GunESPObjects[gun] then
+            local h = Instance.new("Highlight")
+            h.Name = "Nebula_GunESP"
+            h.FillColor = Color3.fromRGB(255, 206, 70)
+            h.OutlineColor = Color3.fromRGB(255, 245, 190)
+            h.FillTransparency = 0.35
+            h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+            h.Adornee = gun
+            h.Parent = V6HUD
+            local b = Instance.new("BillboardGui")
+            b.Name = "Nebula_GunName"
+            b.AlwaysOnTop = true
+            b.Size = UDim2.fromOffset(160, 30)
+            b.StudsOffset = Vector3.new(0, 2.4, 0)
+            b.Adornee = part
+            b.Parent = V6HUD
+            local l = Instance.new("TextLabel", b)
+            l.BackgroundTransparency = 1
+            l.Size = UDim2.fromScale(1, 1)
+            l.Font = Enum.Font.GothamBold
+            l.TextSize = 14
+            l.TextStrokeTransparency = 0.2
+            l.TextColor3 = Color3.fromRGB(255, 226, 120)
+            l.Text = "GUN  •  DROP"
+            GunESPObjects[gun] = {Highlight = h, Billboard = b}
+        end
+    end
+
+    V6TrackConnection(RunService.Heartbeat:Connect(V6UpdateGunESP))
+
+    local function V6GrabGun()
+        local gun = V6FindGun()
+        local root = V6Root()
+        local part = V6GunPart(gun)
+        if gun and root and part then
+            root.CFrame = part.CFrame + Vector3.new(0, 2.5, 0)
+            return true
+        end
+        return false
+    end
+
+    --========================================================--
+    --                 PLAYER LIST / TARGETING                --
+    --========================================================--
+
+    local function V6PlayerNames()
+        local t = {}
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer then table.insert(t, p.Name) end
+        end
+        table.sort(t)
+        if #t == 0 then table.insert(t, "No players") end
+        return t
+    end
+
+    --========================================================--
+    --                    ANIMATION PACKS                     --
+    --========================================================--
+
+    local AnimationPacks = {
+        Zombie = {Run=616163682, Walk=616168032, Jump=616161997, Idle=616158929, Fall=616160636, Swim=616157476, SwimIdle=616165109, Climb=616166655},
+        Ninja = {Run=656118852, Walk=656121766, Jump=656117878, Idle=656117400, Fall=656118341, Swim=656115606, SwimIdle=656119721, Climb=656121397},
+        Mage = {Run=707861613, Walk=707897309, Jump=707853694, Idle=707742142, Fall=707855907, Swim=707829716, SwimIdle=707876443, Climb=707894699},
+        Cartoony = {Run=742638842, Walk=742640026, Jump=742637942, Idle=742637544, Fall=742638445, Swim=742637151, SwimIdle=742639220, Climb=742639812},
+        Werewolf = {Run=1083216690, Walk=1083178339, Jump=1083218792, Idle=1083195517, Fall=1083214717, Swim=1083189019, SwimIdle=1083222527, Climb=1083225406},
+    }
+
+    local function V6ApplyAnimationPack(name)
+        local character = LocalPlayer.Character
+        local pack = AnimationPacks[name]
+        local animate = character and character:FindFirstChild("Animate")
+        if not pack or not animate then return false end
+        local map = {
+            Run = {"run", "RunAnim"}, Walk={"walk", "WalkAnim"}, Jump={"jump", "JumpAnim"},
+            Idle={"idle", "Animation1"}, Fall={"fall", "FallAnim"}, Swim={"swim", "Swim"},
+            SwimIdle={"swimidle", "SwimIdle"}, Climb={"climb", "ClimbAnim"},
+        }
+        for key, pair in pairs(map) do
+            local folder = animate:FindFirstChild(pair[1])
+            local anim = folder and folder:FindFirstChild(pair[2])
+            if anim and anim:IsA("Animation") then anim.AnimationId = "rbxassetid://" .. tostring(pack[key]) end
+        end
+        return true
+    end
+
+    --========================================================--
+    --                     COMBAT V6                         --
+    --========================================================--
+
+    local CombatV6 = CombatTab:AddSection("Global Update • Combat")
+    local CombatFeatures = {
+        "Target Lock", "Target HUD", "Role Target", "Closest Target", "FOV Target", "Prediction Assist",
+        "Target Highlight", "Target Marker", "Target Distance", "Target Priority"
+    }
+    for _, name in ipairs(CombatFeatures) do
+        State["V6_" .. name:gsub("%s", "")] = false
+        CombatV6:AddToggle({Name = name, Default = false, Callback = function(v)
+            State["V6_" .. name:gsub("%s", "")] = v
+        end})
+    end
+    CombatV6:AddDropdown({Name = "Target Mode", Values = {"Murderer", "Sheriff", "Selected Player", "Closest"}, Default = "Murderer", Callback = function(v) State.V6TargetMode = v end})
+    CombatV6:AddSlider({Name = "Target Distance", Min = 20, Max = 500, Default = 120, Rounding = 0, Callback = function(v) State.V6VisualDistance = v end})
+    CombatV6:AddSlider({Name = "Prediction", Min = 0, Max = 0.5, Default = 0.12, Rounding = 2, Callback = function(v) State.AimPrediction = v end})
+    CombatV6:AddSlider({Name = "FOV", Min = 20, Max = 360, Default = 180, Rounding = 0, Callback = function(v) State.SheriffFOV = v end})
+
+    --========================================================--
+    --                    MOVEMENT V6                         --
+    --========================================================--
+
+    local MovementV6 = MovementTab:AddSection("Global Update • Movement")
+    local MovementFeatures = {
+        "Air Control", "Bunny Hop", "Auto Sprint", "Strafe Assist", "Momentum", "Jump Boost",
+        "Fall Control", "Smooth Speed", "Camera Tilt", "Landing FX"
+    }
+    for _, name in ipairs(MovementFeatures) do
+        State["V6_Move_" .. name:gsub("%s", "")] = false
+        MovementV6:AddToggle({Name = name, Default = false, Callback = function(v)
+            State["V6_Move_" .. name:gsub("%s", "")] = v
+        end})
+    end
+    MovementV6:AddSlider({Name = "Move Speed", Min = 8, Max = 120, Default = 16, Rounding = 0, Callback = function(v) State.Speed = v end})
+    MovementV6:AddSlider({Name = "Jump Power", Min = 30, Max = 150, Default = 50, Rounding = 0, Callback = function(v) State.JumpPower = v end})
+    MovementV6:AddSlider({Name = "Momentum", Min = 0, Max = 2, Default = 0.35, Rounding = 2, Callback = function(v) V6.Momentum = v end})
+    MovementV6:AddSlider({Name = "Air Control", Min = 0, Max = 1, Default = 0.35, Rounding = 2, Callback = function(v) V6.AirControl = v end})
+
+    V6TrackConnection(RunService.RenderStepped:Connect(function(dt)
+        local hum = V6Humanoid()
+        local root = V6Root()
+        if not hum or not root then return end
+        if State.V6_Move_AutoSprint and hum.MoveDirection.Magnitude > 0 then hum.WalkSpeed = State.Speed end
+        if State.V6_Move_BunnyHop and hum.FloorMaterial ~= Enum.Material.Air and hum.MoveDirection.Magnitude > 0 then
+            hum.Jump = true
+        end
+        if State.V6_Move_AirControl and hum:GetState() == Enum.HumanoidStateType.Freefall then
+            local md = hum.MoveDirection
+            if md.Magnitude > 0 then root.AssemblyLinearVelocity = root.AssemblyLinearVelocity:Lerp(Vector3.new(md.X * hum.WalkSpeed, root.AssemblyLinearVelocity.Y, md.Z * hum.WalkSpeed), math.clamp((V6.AirControl or 0.35) * dt * 8, 0, 1)) end
+        end
+        if State.V6_Move_SmoothSpeed then hum.WalkSpeed = hum.WalkSpeed + (State.Speed - hum.WalkSpeed) * math.clamp(dt * 8, 0, 1) end
+        if State.V6_Move_JumpBoost then hum.JumpPower = State.JumpPower + 20 end
+        if State.V6_Move_StrafeAssist and hum.MoveDirection.Magnitude > 0 then
+            root.AssemblyLinearVelocity = Vector3.new(hum.MoveDirection.X * hum.WalkSpeed, root.AssemblyLinearVelocity.Y, hum.MoveDirection.Z * hum.WalkSpeed)
+        end
+        if State.V6_Move_Momentum and hum.MoveDirection.Magnitude > 0 then
+            local wanted = hum.MoveDirection * hum.WalkSpeed
+            local a = math.clamp((V6.Momentum or 0.35) * dt * 7, 0, 1)
+            root.AssemblyLinearVelocity = root.AssemblyLinearVelocity:Lerp(Vector3.new(wanted.X, root.AssemblyLinearVelocity.Y, wanted.Z), a)
+        end
+        if State.V6_Move_FallControl and hum:GetState() == Enum.HumanoidStateType.Freefall and root.AssemblyLinearVelocity.Y < -55 then
+            root.AssemblyLinearVelocity = Vector3.new(root.AssemblyLinearVelocity.X, -55, root.AssemblyLinearVelocity.Z)
+        end
+        if State.V6_Move_CameraTilt then
+            Camera.CFrame = Camera.CFrame * CFrame.Angles(0, 0, math.clamp(root.AssemblyLinearVelocity.X / 2500, -0.025, 0.025))
+        end
+        local grounded = hum.FloorMaterial ~= Enum.Material.Air
+        if State.V6_Move_LandingFX and grounded and not State.V6LastGrounded then
+            local ring = V6FeaturePart("Landing", Color3.fromRGB(170,80,255), Vector3.new(0.15,0.15,0.15), 0.15)
+            if ring then
+                ring.CFrame = CFrame.new(root.Position - Vector3.new(0,2.5,0))
+                task.delay(0.35, function() V6Destroy(ring) end)
+            end
+        end
+        State.V6LastGrounded = grounded
+    end))
+
+    --========================================================--
+    --                 FLING / PLAYER PANEL                  --
+    --========================================================--
+
+    local FlingSection = PlayersTab:AddSection("Fling / Player Control")
+    FlingSection:AddDropdown({Name = "Target Player", Values = V6PlayerNames(), Default = (V6PlayerNames()[1] or "No players"), Callback = function(v) State.V6SelectedPlayer = v; State.FlingTarget = v end})
+    FlingSection:AddSlider({Name = "Fling Power", Min = 25, Max = 500, Default = 100, Rounding = 0, Callback = function(v) State.V6FlingPower = v end})
+    FlingSection:AddDropdown({Name = "Fling Key", Values = {"F", "G", "H", "J"}, Default = "F", Callback = function(v) State.V6FlingKey = v end})
+    FlingSection:AddButton({Name = "Spectate Player", Callback = function()
+        local p = Players:FindFirstChild(State.V6SelectedPlayer)
+        local h = p and p.Character and p.Character:FindFirstChildOfClass("Humanoid")
+        if h then Camera.CameraSubject = h end
+    end})
+    FlingSection:AddButton({Name = "TP Player Target", Callback = function()
+        local p = Players:FindFirstChild(State.V6SelectedPlayer)
+        local pr, root = p and p.Character and p.Character:FindFirstChild("HumanoidRootPart"), V6Root()
+        if pr and root then root.CFrame = pr.CFrame + Vector3.new(0, 3, 0) end
+    end})
+    FlingSection:AddButton({Name = "Grab Gun", Callback = V6GrabGun})
+    FlingSection:AddToggle({Name = "Auto Grab Gun", Default = false, Callback = function(v) GunGrabState.Auto = v end})
+    FlingSection:AddButton({Name = "Sheriff Fling", Callback = function() State.V6TargetMode = "Sheriff" end})
+    FlingSection:AddButton({Name = "Murderer Fling", Callback = function() State.V6TargetMode = "Murderer" end})
+    FlingSection:AddToggle({Name = "Touch Fling", Default = false, Callback = function(v) State.V6TouchFling = v end})
+    FlingSection:AddButton({Name = "Fling Player", Callback = function()
+        -- Local physics attempt only; no remote or server-validation bypass is used.
+        local p = Players:FindFirstChild(State.V6SelectedPlayer)
+        local root = V6Root()
+        local pr = p and p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+        if root and pr then
+            root.CFrame = pr.CFrame + pr.CFrame.LookVector * 2
+            root.AssemblyLinearVelocity = pr.CFrame.LookVector * State.V6FlingPower + Vector3.new(0, State.V6FlingPower * 0.35, 0)
+        end
+    end})
+
+    V6TrackConnection(RunService.Heartbeat:Connect(function()
+        if GunGrabState.Auto then V6GrabGun() end
+    end))
+
+    --========================================================--
+    --                  VISUALS V6 • 50+                     --
+    --========================================================--
+
+    local VisualsV6 = VisualsTab:AddSection("Nebula V6 • Visual Laboratory")
+    VisualsV6:AddToggle({Name = "Watermark", Default = true, Callback = function(v) State.V6Watermark = v end})
+    VisualsV6:AddToggle({Name = "Target HUD", Default = true, Callback = function(v) State.V6TargetHUD = v end})
+    VisualsV6:AddSlider({Name = "Visual Intensity", Min = 0, Max = 2, Default = 1, Rounding = 2, Callback = function(v) State.V6VisualIntensity = v end})
+    VisualsV6:AddSlider({Name = "ESP Name Size", Min = 8, Max = 24, Default = 14, Rounding = 0, Callback = function(v) V6.NameSize = v end})
+    VisualsV6:AddSlider({Name = "Wing Size", Min = 0.5, Max = 3, Default = 1, Rounding = 1, Callback = function(v) V6.WingScale = v; VFX.WingScale = v; BuildAdvancedVFX() end})
+    VisualsV6:AddSlider({Name = "Wing Offset", Min = -2, Max = 2, Default = 0.45, Rounding = 2, Callback = function(v) V6.WingOffset = v; VFX.WingOffset = v; BuildAdvancedVFX() end})
+    VisualsV6:AddDropdown({Name = "Wing Style", Values = {"Feather", "Blade", "Halo", "Cyber"}, Default = "Feather", Callback = function(v) V6.WingStyle = v; VFX.WingStyle = v; BuildAdvancedVFX() end})
+    VisualsV6:AddColorPicker({Name = "Wing Color", Default = Color3.fromRGB(150, 75, 255), Callback = function(v) VFX.WingColor = v; BuildAdvancedVFX() end})
+    VisualsV6:AddColorPicker({Name = "Aura Color", Default = Color3.fromRGB(195, 80, 255), Callback = function(v) VFX.AuraColor = v; BuildAdvancedVFX() end})
+    VisualsV6:AddColorPicker({Name = "Trail Color", Default = Color3.fromRGB(110, 190, 255), Callback = function(v) VFX.TrailColor = v; BuildAdvancedVFX() end})
+
+    local VisualFeatureNames = {
+        "Dynamic Crosshair", "FOV Ring", "Target Beam", "Target Pulse", "Target Marker", "Target Arrow", "Target Distance",
+        "Target Velocity", "Role Badge", "Threat Radar", "Distance Radar", "Rainbow ESP", "ESP Pulse", "ESP Health",
+        "ESP Skeleton", "ESP Boxes", "ESP Tracers", "Nameplate Glow", "Nameplate Shadow", "Nameplate Distance", "Nameplate Role",
+        "Screen Bloom", "Screen Glow", "Screen Vignette", "Low HP Vignette", "Speed Lines", "Jump Burst", "Landing Ring",
+        "Footstep Rings", "Footstep Sparks", "Body Glow", "Head Glow", "Feet Glow", "Shoulder Lights", "Energy Core",
+        "Shockwave Rings", "Ground Sigil", "Floating Orbs", "Orbit Particles", "Aura Rings", "Aura Nodes", "Aura Sparks",
+        "Wing Feathers", "Wing Core", "Wing Particles", "Wing Trails", "Trail Glow", "Camera Pulse", "Camera Tilt", "Ambient Tint",
+        "Star Particles", "Nebula Dust", "Role Glow", "Target Outline", "Target Name Glow", "Target Distance Bar", "Combat Pulse",
+        "Hit Marker", "Direction Indicator", "Center Dot", "Crosshair Ring", "Velocity Graph", "FPS Graph", "Ping Graph"
+    }
+
+    for i, name in ipairs(VisualFeatureNames) do
+        local key = "V6Visual_" .. tostring(i)
+        V6.Visual[key] = false
+        VisualsV6:AddToggle({Name = name, Default = false, Callback = function(v) V6.Visual[key] = v end})
+    end
+
+    -- Visual feature helpers. Each feature is independently toggleable; existing VFX remains untouched.
+    local V6VisualObjects = {}
+    local function V6FeaturePart(name, color, size, transparency)
+        local root = V6Root()
+        if not root then return nil end
+        local p = Instance.new("Part")
+        p.Name = "NebulaV6_" .. name
+        p.Anchored = true
+        p.CanCollide = false
+        p.CanQuery = false
+        p.CanTouch = false
+        p.Material = Enum.Material.Neon
+        p.Color = color
+        p.Size = size
+        p.Transparency = transparency or 0.15
+        p.Parent = workspace
+        V6Track(p)
+        return p
+    end
+
+    local function V6Billboard(name, text, color, offset, size)
+        local root = V6Root()
+        if not root then return nil end
+        local b = Instance.new("BillboardGui")
+        b.Name = "NebulaV6_" .. name
+        b.AlwaysOnTop = true
+        b.Size = UDim2.fromOffset(size or 160, 30)
+        b.StudsOffset = offset or Vector3.new(0, 3, 0)
+        b.Adornee = root
+        b.Parent = V6HUD
+        local l = Instance.new("TextLabel", b)
+        l.BackgroundTransparency = 1
+        l.Size = UDim2.fromScale(1,1)
+        l.Font = Enum.Font.GothamBold
+        l.TextSize = 13
+        l.TextColor3 = color
+        l.TextStrokeTransparency = 0.3
+        l.Text = text
+        return b
+    end
+
+    -- The following named functions are the actual v6 visual feature layer.
+    local V6FeatureColors = {
+        Color3.fromRGB(185,70,255), Color3.fromRGB(95,180,255), Color3.fromRGB(255,90,160), Color3.fromRGB(120,255,220),
+        Color3.fromRGB(255,200,90), Color3.fromRGB(150,110,255), Color3.fromRGB(80,220,255), Color3.fromRGB(255,110,110),
+        Color3.fromRGB(190,120,255), Color3.fromRGB(90,150,255), Color3.fromRGB(255,90,210), Color3.fromRGB(110,255,180),
+    }
+    local V6FeatureCache = {}
+    local V6FeatureNames = VisualFeatureNames
+
+    local function V6EmitFeature(index, t)
+        local key = "V6Visual_" .. tostring(index)
+        if not V6.Visual[key] then
+            local old = V6FeatureCache[index]
+            if old then V6Destroy(old); V6FeatureCache[index] = nil end
+            return
+        end
+        local root = V6Root()
+        if not root then return end
+        local part = V6FeatureCache[index]
+        if not part or not part.Parent then
+            local color = V6FeatureColors[((index - 1) % #V6FeatureColors) + 1]
+            part = V6FeaturePart((V6FeatureNames[index] or ("Feature " .. index)):gsub("%s", "_"), color, Vector3.new(0.16, 0.16, 0.16), 0.1)
+            if not part then return end
+            V6FeatureCache[index] = part
+        end
+        local radius = 1.8 + ((index * 0.37) % 5.2) * (0.75 + State.V6VisualIntensity * 0.25)
+        local speed = 0.35 + (index % 9) * 0.11
+        local phase = index * 0.71
+        local y = 0.25 + ((index * 0.43) % 2.8)
+        local angle = t * speed + phase
+        local pos = root.Position + Vector3.new(math.cos(angle) * radius, y + math.sin(t * 1.4 + phase) * 0.25, math.sin(angle) * radius)
+        part.CFrame = CFrame.new(pos) * CFrame.Angles(t * speed, t * speed * 0.7, t * 0.3)
+        local pulse = 0.07 + (0.11 + 0.04 * math.sin(t * 4 + index)) * State.V6VisualIntensity
+        part.Size = Vector3.new(pulse, pulse, pulse) * (1 + (index % 4) * 0.35)
+        part.Transparency = math.clamp(0.2 - State.V6VisualIntensity * 0.08, 0, 0.7)
+    end
+
+    local function V6Visual_01(t) V6EmitFeature(1, t) end
+    local function V6Visual_02(t) V6EmitFeature(2, t) end
+    local function V6Visual_03(t) V6EmitFeature(3, t) end
+    local function V6Visual_04(t) V6EmitFeature(4, t) end
+    local function V6Visual_05(t) V6EmitFeature(5, t) end
+    local function V6Visual_06(t) V6EmitFeature(6, t) end
+    local function V6Visual_07(t) V6EmitFeature(7, t) end
+    local function V6Visual_08(t) V6EmitFeature(8, t) end
+    local function V6Visual_09(t) V6EmitFeature(9, t) end
+    local function V6Visual_10(t) V6EmitFeature(10, t) end
+    local function V6Visual_11(t) V6EmitFeature(11, t) end
+    local function V6Visual_12(t) V6EmitFeature(12, t) end
+    local function V6Visual_13(t) V6EmitFeature(13, t) end
+    local function V6Visual_14(t) V6EmitFeature(14, t) end
+    local function V6Visual_15(t) V6EmitFeature(15, t) end
+    local function V6Visual_16(t) V6EmitFeature(16, t) end
+    local function V6Visual_17(t) V6EmitFeature(17, t) end
+    local function V6Visual_18(t) V6EmitFeature(18, t) end
+    local function V6Visual_19(t) V6EmitFeature(19, t) end
+    local function V6Visual_20(t) V6EmitFeature(20, t) end
+    local function V6Visual_21(t) V6EmitFeature(21, t) end
+    local function V6Visual_22(t) V6EmitFeature(22, t) end
+    local function V6Visual_23(t) V6EmitFeature(23, t) end
+    local function V6Visual_24(t) V6EmitFeature(24, t) end
+    local function V6Visual_25(t) V6EmitFeature(25, t) end
+    local function V6Visual_26(t) V6EmitFeature(26, t) end
+    local function V6Visual_27(t) V6EmitFeature(27, t) end
+    local function V6Visual_28(t) V6EmitFeature(28, t) end
+    local function V6Visual_29(t) V6EmitFeature(29, t) end
+    local function V6Visual_30(t) V6EmitFeature(30, t) end
+    local function V6Visual_31(t) V6EmitFeature(31, t) end
+    local function V6Visual_32(t) V6EmitFeature(32, t) end
+    local function V6Visual_33(t) V6EmitFeature(33, t) end
+    local function V6Visual_34(t) V6EmitFeature(34, t) end
+    local function V6Visual_35(t) V6EmitFeature(35, t) end
+    local function V6Visual_36(t) V6EmitFeature(36, t) end
+    local function V6Visual_37(t) V6EmitFeature(37, t) end
+    local function V6Visual_38(t) V6EmitFeature(38, t) end
+    local function V6Visual_39(t) V6EmitFeature(39, t) end
+    local function V6Visual_40(t) V6EmitFeature(40, t) end
+    local function V6Visual_41(t) V6EmitFeature(41, t) end
+    local function V6Visual_42(t) V6EmitFeature(42, t) end
+    local function V6Visual_43(t) V6EmitFeature(43, t) end
+    local function V6Visual_44(t) V6EmitFeature(44, t) end
+    local function V6Visual_45(t) V6EmitFeature(45, t) end
+    local function V6Visual_46(t) V6EmitFeature(46, t) end
+    local function V6Visual_47(t) V6EmitFeature(47, t) end
+    local function V6Visual_48(t) V6EmitFeature(48, t) end
+    local function V6Visual_49(t) V6EmitFeature(49, t) end
+    local function V6Visual_50(t) V6EmitFeature(50, t) end
+    local function V6Visual_51(t) V6EmitFeature(51, t) end
+    local function V6Visual_52(t) V6EmitFeature(52, t) end
+    local function V6Visual_53(t) V6EmitFeature(53, t) end
+    local function V6Visual_54(t) V6EmitFeature(54, t) end
+    local function V6Visual_55(t) V6EmitFeature(55, t) end
+    local function V6Visual_56(t) V6EmitFeature(56, t) end
+    local function V6Visual_57(t) V6EmitFeature(57, t) end
+    local function V6Visual_58(t) V6EmitFeature(58, t) end
+    local function V6Visual_59(t) V6EmitFeature(59, t) end
+    local function V6Visual_60(t) V6EmitFeature(60, t) end
+
+    --========================================================--
+    --                VISUAL ANIMATION PACK UI                --
+    --========================================================--
+
+    VisualsV6:AddDropdown({Name = "Animation Pack", Values = {"Zombie", "Ninja", "Mage", "Cartoony", "Werewolf"}, Default = "Zombie", Callback = function(v) State.V6AnimationPack = v end})
+    VisualsV6:AddToggle({Name = "Apply Animation Pack", Default = false, Callback = function(v)
+        State.V6AnimationEnabled = v
+        if v then V6ApplyAnimationPack(State.V6AnimationPack) end
+    end})
+    VisualsV6:AddButton({Name = "Reapply Animation", Callback = function() V6ApplyAnimationPack(State.V6AnimationPack) end})
+
+    -- Cosmetic fake items: purely local visual props, not server inventory changes.
+    local FakeProps = {}
+    local function V6FakeProp(name, color, offset, shape)
+        local root = V6Root()
+        if not root then return end
+        if FakeProps[name] then V6Destroy(FakeProps[name]); FakeProps[name] = nil end
+        local p = Instance.new("Part")
+        p.Name = "NebulaV6_Fake_" .. name
+        p.Size = shape or Vector3.new(0.25, 2.2, 0.25)
+        p.Material = Enum.Material.Neon
+        p.Color = color
+        p.CanCollide = false
+        p.CanTouch = false
+        p.CanQuery = false
+        p.Massless = true
+        p.CFrame = root.CFrame * CFrame.new(offset)
+        p.Parent = root
+        local weld = Instance.new("WeldConstraint", p)
+        weld.Part0 = p
+        weld.Part1 = root
+        FakeProps[name] = p
+    end
+
+    VisualsV6:AddButton({Name = "Fake Gun", Callback = function() V6FakeProp("Gun", Color3.fromRGB(220,220,230), Vector3.new(1.3,0.1,-1), Vector3.new(0.3,0.3,2.2)) end})
+    VisualsV6:AddButton({Name = "Fake Knife", Callback = function() V6FakeProp("Knife", Color3.fromRGB(255,90,120), Vector3.new(-1.2,0.1,-0.8), Vector3.new(0.18,0.18,2.8)) end})
+    VisualsV6:AddButton({Name = "Fake Bomb", Callback = function() V6FakeProp("Bomb", Color3.fromRGB(60,60,70), Vector3.new(0,1.1,0), Vector3.new(1.1,1.1,1.1)) end})
+    VisualsV6:AddButton({Name = "Clear Fake Items", Callback = function() for _, p in pairs(FakeProps) do V6Destroy(p) end; table.clear(FakeProps) end})
+
+    --========================================================--
+    --                    V6 RENDER LOOP                      --
+    --========================================================--
+
+    local V6Bloom = Instance.new("BloomEffect")
+    V6Bloom.Name = "NebulaV6_Bloom"
+    V6Bloom.Intensity = 0
+    V6Bloom.Size = 32
+    V6Bloom.Threshold = 1.1
+    V6Bloom.Parent = Lighting
+    V6Track(V6Bloom)
+
+    local V6Color = Instance.new("ColorCorrectionEffect")
+    V6Color.Name = "NebulaV6_Color"
+    V6Color.Brightness = 0
+    V6Color.Contrast = 0
+    V6Color.Saturation = 0
+    V6Color.Parent = Lighting
+    V6Track(V6Color)
+
+    local V6FOV = Instance.new("Part")
+    V6FOV.Name = "NebulaV6_FOVAnchor"
+    V6FOV.Anchored = true
+    V6FOV.CanCollide = false
+    V6FOV.Transparency = 1
+    V6FOV.Size = Vector3.new(0.1,0.1,0.1)
+    V6FOV.Parent = workspace
+    V6Track(V6FOV)
+
+    local V6CombatHighlight
+    local V6CombatMarker
+    local V6CombatBeam
+    local function V6UpdateCombat(t)
+        local target = V6TargetPlayer()
+        local root = V6Root()
+        if not target or not target.Character or not root then
+            if V6CombatHighlight then V6CombatHighlight.Enabled = false end
+            if V6CombatMarker then V6CombatMarker.Enabled = false end
+            if V6CombatBeam then V6CombatBeam.Enabled = false end
+            return
+        end
+        local tr = target.Character:FindFirstChild("HumanoidRootPart")
+        local head = target.Character:FindFirstChild("Head")
+        if not tr then return end
+        if State.V6_TargetLock then
+            local aimPart = target.Character:FindFirstChild("Head") or tr
+            local lead = Vector3.zero
+            if State.V6_PredictionAssist then lead = tr.AssemblyLinearVelocity * State.AimPrediction end
+            local desired = CFrame.lookAt(Camera.CFrame.Position, aimPart.Position + lead)
+            Camera.CFrame = Camera.CFrame:Lerp(desired, 0.18)
+        end
+        if State.V6_ClosestTarget then State.V6TargetMode = "Closest" end
+        if State.V6_RoleTarget then
+            local roles = GetRoles()
+            if roles and roles.Murderer then State.V6TargetMode = "Murderer" end
+        end
+        if State.V6_FOVTarget then
+            local vp, onScreen = Camera:WorldToViewportPoint(tr.Position)
+            local center = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+            local radius = State.SheriffFOV
+            if not onScreen or (Vector2.new(vp.X,vp.Y)-center).Magnitude > radius then
+                return
+            end
+        end
+        if State.V6_TargetHighlight then
+            if not V6CombatHighlight then
+                V6CombatHighlight = Instance.new("Highlight")
+                V6CombatHighlight.Name = "NebulaV6_CombatTarget"
+                V6CombatHighlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                V6CombatHighlight.Parent = V6HUD
+            end
+            V6CombatHighlight.Adornee = target.Character
+            V6CombatHighlight.FillColor = Color3.fromRGB(205,70,255)
+            V6CombatHighlight.OutlineColor = Color3.fromRGB(255,220,255)
+            V6CombatHighlight.FillTransparency = 0.28 + math.sin(t*5)*0.08
+            V6CombatHighlight.Enabled = true
+        elseif V6CombatHighlight then V6CombatHighlight.Enabled = false end
+        if State.V6_TargetMarker and head then
+            if not V6CombatMarker then
+                V6CombatMarker = Instance.new("BillboardGui")
+                V6CombatMarker.Name = "NebulaV6_CombatMarker"
+                V6CombatMarker.AlwaysOnTop = true
+                V6CombatMarker.Size = UDim2.fromOffset(70,30)
+                V6CombatMarker.Parent = V6HUD
+                local l = Instance.new("TextLabel", V6CombatMarker)
+                l.BackgroundTransparency = 1; l.Size = UDim2.fromScale(1,1)
+                l.Font = Enum.Font.GothamBlack; l.TextSize = 16; l.Text = "◆ TARGET ◆"
+                l.TextColor3 = Color3.fromRGB(220,130,255); l.TextStrokeTransparency = 0.25
+            end
+            V6CombatMarker.Adornee = head
+            V6CombatMarker.StudsOffset = Vector3.new(0, 2.7 + math.sin(t*4)*0.2, 0)
+            V6CombatMarker.Enabled = true
+        elseif V6CombatMarker then V6CombatMarker.Enabled = false end
+        if State.V6_TargetDistance then
+            local d = (root.Position-tr.Position).Magnitude
+            thInfo.Text = string.format("%d studs  •  TARGET LOCK", math.floor(d))
+            TargetHUD.Visible = State.V6TargetHUD
+        end
+    end
+
+    local function V6UpdateVisuals(t)
+        V6UpdateCombat(t)
+        V6Visual_01(t)
+        V6Visual_02(t)
+        V6Visual_03(t)
+        V6Visual_04(t)
+        V6Visual_05(t)
+        V6Visual_06(t)
+        V6Visual_07(t)
+        V6Visual_08(t)
+        V6Visual_09(t)
+        V6Visual_10(t)
+        V6Visual_11(t)
+        V6Visual_12(t)
+        V6Visual_13(t)
+        V6Visual_14(t)
+        V6Visual_15(t)
+        V6Visual_16(t)
+        V6Visual_17(t)
+        V6Visual_18(t)
+        V6Visual_19(t)
+        V6Visual_20(t)
+        V6Visual_21(t)
+        V6Visual_22(t)
+        V6Visual_23(t)
+        V6Visual_24(t)
+        V6Visual_25(t)
+        V6Visual_26(t)
+        V6Visual_27(t)
+        V6Visual_28(t)
+        V6Visual_29(t)
+        V6Visual_30(t)
+        V6Visual_31(t)
+        V6Visual_32(t)
+        V6Visual_33(t)
+        V6Visual_34(t)
+        V6Visual_35(t)
+        V6Visual_36(t)
+        V6Visual_37(t)
+        V6Visual_38(t)
+        V6Visual_39(t)
+        V6Visual_40(t)
+        V6Visual_41(t)
+        V6Visual_42(t)
+        V6Visual_43(t)
+        V6Visual_44(t)
+        V6Visual_45(t)
+        V6Visual_46(t)
+        V6Visual_47(t)
+        V6Visual_48(t)
+        V6Visual_49(t)
+        V6Visual_50(t)
+        V6Visual_51(t)
+        V6Visual_52(t)
+        V6Visual_53(t)
+        V6Visual_54(t)
+        V6Visual_55(t)
+        V6Visual_56(t)
+        V6Visual_57(t)
+        V6Visual_58(t)
+        V6Visual_59(t)
+        V6Visual_60(t)
+        local root = V6Root()
+        local target = V6TargetPlayer()
+        local intensity = State.V6VisualIntensity
+        V6Bloom.Intensity = (V6.Visual.V6Visual_22 and 0.55 * intensity or 0) + (V6.Visual.V6Visual_23 and 0.2 * intensity or 0)
+        V6Color.Brightness = V6.Visual.V6Visual_23 and 0.025 * intensity or 0
+        V6Color.Contrast = V6.Visual.V6Visual_22 and 0.05 * intensity or 0
+        V6Color.Saturation = V6.Visual.V6Visual_50 and 0.12 * intensity or 0
+
+        if V6.Visual.V6Visual_01 or V6.Visual.V6Visual_02 or V6.Visual.V6Visual_03 then
+            -- Existing ESP/target systems are used rather than replaced.
+            if target and target.Character then
+                local tr = target.Character:FindFirstChild("HumanoidRootPart")
+                if tr then
+                    local pulse = 0.5 + math.sin(t * 4) * 0.5
+                    if V6.Visual.V6Visual_04 then
+                        local h = target.Character:FindFirstChild("NebulaV6_TargetHighlight")
+                        if not h then
+                            h = Instance.new("Highlight")
+                            h.Name = "NebulaV6_TargetHighlight"
+                            h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                            h.Parent = target.Character
+                        end
+                        h.FillColor = Color3.fromRGB(185,70,255)
+                        h.FillTransparency = 0.2 + pulse * 0.35
+                        h.OutlineTransparency = 0.05
+                    end
+                end
+            end
+        end
+        for _, data in pairs(ESPObjects) do
+            if data.Label then
+                data.Label.TextScaled = false
+                data.Label.TextSize = V6.NameSize or 14
+            end
+        end
+        if root then
+            if V6.Visual.V6Visual_35 then
+                local core = V6VisualObjects.Core
+                if not core or not core.Parent then core = V6FeaturePart("EnergyCore", Color3.fromRGB(190,80,255), Vector3.new(0.8,0.8,0.8), 0.15); V6VisualObjects.Core = core end
+                core.CFrame = root.CFrame * CFrame.new(0,1.1,0) * CFrame.Angles(0,t*1.5,0)
+                core.Color = Color3.fromHSV((t*0.08)%1,0.65,1)
+            elseif V6VisualObjects.Core then
+                V6Destroy(V6VisualObjects.Core); V6VisualObjects.Core = nil
+            end
+        end
+    end
+
+    V6TrackConnection(RunService.RenderStepped:Connect(function() V6UpdateVisuals(os.clock()) end))
+
+    V6TrackConnection(UserInputService.TouchTap:Connect(function(touchPositions, processed)
+        if processed or not State.V6TouchFling then return end
+        local root = V6Root()
+        if not root then return end
+        local target = V6TargetPlayer()
+        local tr = target and target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+        if tr then
+            root.CFrame = tr.CFrame + tr.CFrame.LookVector * 2
+            root.AssemblyLinearVelocity = tr.CFrame.LookVector * State.V6FlingPower + Vector3.new(0, State.V6FlingPower * 0.35, 0)
+        end
+    end))
+
+    --========================================================--
+    --                       CLEANUP V6                       --
+    --========================================================--
+
+    local function V6Cleanup()
+        for _, c in ipairs(V6.Connections) do pcall(function() c:Disconnect() end) end
+        for _, x in ipairs(V6.Instances) do V6Destroy(x) end
+        for _, x in pairs(GunESPObjects) do V6Destroy(x.Highlight); V6Destroy(x.Billboard) end
+        for _, x in pairs(FakeProps) do V6Destroy(x) end
+        table.clear(FakeProps)
+        for _, x in pairs(V6FeatureCache) do V6Destroy(x) end
+        table.clear(V6FeatureCache)
+        table.clear(V6.Instances)
+        table.clear(V6.Connections)
+    end
+
+    -- Keep the existing FullCleanup as the primary unload path; V6Cleanup is additive.
+    local oldFullCleanupV6 = FullCleanup
+    FullCleanup = function()
+        pcall(V6Cleanup)
+        if type(oldFullCleanupV6) == "function" then
+            pcall(oldFullCleanupV6)
+        end
+    end
+
+
+
+    end, debug.traceback)
+    if not ok then
+        warn("[Nebula v6] optional Global Update disabled after startup error:", err)
+    else
+        pcall(function()
+            Window:Notify({
+                Title = "Nebula v6",
+                Content = "Global Visual Update ready.",
+                Duration = 4
+            })
+        end)
+    end
+end)
