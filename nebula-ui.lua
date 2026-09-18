@@ -472,6 +472,8 @@ function Library:CreateWindow(options)
         Transparency = tonumber(options.Transparency) or 0,
         AnimationSpeed = tonumber(options.AnimationSpeed) or 1,
         ReducedMotion = options.ReducedMotion == true,
+        -- Mobile fitting is a library default; developers do not need to opt in.
+        AutoScale = options.AutoScale ~= false,
     }
     Window._baseTextSizes = {}
     Window._OriginalTheme = {}
@@ -4346,7 +4348,12 @@ function Library:CreateWindow(options)
         pcall(function()
             preferredTouch = UserInputService.PreferredInput == Enum.PreferredInput.Touch
         end)
-        local isMobile = preferredTouch or viewport.X < Window.Breakpoints.Mobile or display == Enum.DisplaySize.Small
+        local isMobile = preferredTouch or viewport.X < Window.Breakpoints.Mobile
+        pcall(function()
+            if display == Enum.DisplaySize.Small then
+                isMobile = true
+            end
+        end)
 
         if isMobile == Window.IsMobile then
             if isMobile then ApplyMobileLayout() else ApplyDesktopLayout() end
