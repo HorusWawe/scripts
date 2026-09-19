@@ -32,7 +32,7 @@
 ]]
 
 --------------------------------------------------
--- v5.4 FIXES / DEFAULTS
+-- v6.0 HYBRID VISUAL UPDATE
 --------------------------------------------------
 -- - Persistent configs are scoped per window title so different scripts do not collide.
 -- - Settings/config manager is fully built into the library; script authors need no extra code.
@@ -95,7 +95,7 @@ end
 
 local Library = {}
 
-Library.Version = "5.5.0"
+Library.Version = "6.0.0"
 Library.Name = "Nebula UI"
 Library.Plugins = {}
 
@@ -427,7 +427,14 @@ function Library:CreateWindow(options)
 
     Window.Title = options.Title or options.Name or "Nebula UI"
     Window.Subtitle = options.Subtitle or "Universal Interface"
-    Window.Size = options.Size or UDim2.fromOffset(720, 500)
+    Window.Design = {
+        Name = "Nebula Hybrid",
+        Version = "6.0",
+        Compact = options.Compact == true,
+        Glow = options.Glow ~= false,
+        CardRadius = tonumber(options.CardRadius) or 11,
+    }
+    Window.Size = options.Size or UDim2.fromOffset(840, 560)
     Window.ToggleKey = options.ToggleKey or Enum.KeyCode.RightControl -- default: Right Ctrl
 
     Window.Theme = self.CurrentTheme
@@ -607,7 +614,7 @@ function Library:CreateWindow(options)
 
     local Header = Instance.new("Frame")
     Header.Name = "Header"
-    Header.Size = UDim2.new(1, 0, 0, 70)
+    Header.Size = UDim2.new(1, 0, 0, 76)
     Header.BackgroundColor3 = Window.Theme.Secondary
     Header.BorderSizePixel = 0
     Header.Parent = Main
@@ -618,7 +625,8 @@ function Library:CreateWindow(options)
         ColorSequenceKeypoint.new(1, Color3.fromRGB(210, 210, 220))
     })
     headerGradient.Transparency = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, 0.97),
+        NumberSequenceKeypoint.new(0, 0.78),
+        NumberSequenceKeypoint.new(0.55, 0.91),
         NumberSequenceKeypoint.new(1, 1)
     })
     headerGradient.Parent = Header
@@ -643,6 +651,27 @@ function Library:CreateWindow(options)
 
     Corner(AccentLine, 3)
     BindTheme(AccentLine, "BackgroundColor3", "Accent")
+
+    -- v6: subtle hybrid-design glow, inspired by modern control-center UIs.
+    -- It is decorative only and does not participate in input/layout logic.
+    local HeaderGlow = Instance.new("Frame")
+    HeaderGlow.Name = "HeaderGlow"
+    HeaderGlow.BackgroundColor3 = Window.Theme.Accent
+    HeaderGlow.BackgroundTransparency = 0.94
+    HeaderGlow.BorderSizePixel = 0
+    HeaderGlow.Position = UDim2.new(0, 54, 0, 10)
+    HeaderGlow.Size = UDim2.fromOffset(180, 54)
+    HeaderGlow.ZIndex = 0
+    HeaderGlow.Parent = Header
+    Corner(HeaderGlow, 27)
+    BindTheme(HeaderGlow, "BackgroundColor3", "Accent")
+
+    local HeaderMeta = CreateText(Header, "NEBULA  //  CONTROL CENTER", 9, Enum.Font.GothamMedium)
+    HeaderMeta.Position = UDim2.new(0, 18, 1, -22)
+    HeaderMeta.Size = UDim2.fromOffset(210, 14)
+    HeaderMeta.TextColor3 = Window.Theme.SubText
+    HeaderMeta.ZIndex = 3
+    BindTheme(HeaderMeta, "TextColor3", "SubText")
 
     local TitleLabel = CreateText(Header, Window.Title, 16, Enum.Font.GothamBold)
     TitleLabel.Position = UDim2.fromOffset(18, 21)
@@ -729,8 +758,8 @@ function Library:CreateWindow(options)
 
     local Body = Instance.new("CanvasGroup")
     Body.Name = "Body"
-    Body.Position = UDim2.fromOffset(0, 70)
-    Body.Size = UDim2.new(1, 0, 1, -70)
+    Body.Position = UDim2.fromOffset(0, 76)
+    Body.Size = UDim2.new(1, 0, 1, -76)
     Body.BackgroundTransparency = 1
     Body.GroupTransparency = 0
     Body.Parent = Main
@@ -739,7 +768,7 @@ function Library:CreateWindow(options)
     -- SIDEBAR
     --------------------------------------------------
 
-    local SIDEBAR_WIDTH = math.max(100, tonumber(options.SidebarWidth) or 160)
+    local SIDEBAR_WIDTH = math.max(100, tonumber(options.SidebarWidth) or 176)
 
     local Sidebar = Instance.new("Frame")
     Sidebar.Name = "Sidebar"
@@ -750,10 +779,57 @@ function Library:CreateWindow(options)
     Sidebar.Parent = Body
     BindTheme(Sidebar, "BackgroundColor3", "Background")
 
+    local SidebarGradient = Instance.new("UIGradient")
+    SidebarGradient.Name = "SidebarGradient"
+    SidebarGradient.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Window.Theme.Secondary),
+        ColorSequenceKeypoint.new(1, Window.Theme.Background)
+    })
+    SidebarGradient.Rotation = 90
+    SidebarGradient.Parent = Sidebar
+
+    local SidebarBrand = Instance.new("Frame")
+    SidebarBrand.Name = "SidebarBrand"
+    SidebarBrand.Size = UDim2.new(1, -20, 0, 52)
+    SidebarBrand.Position = UDim2.fromOffset(10, 10)
+    SidebarBrand.BackgroundColor3 = Window.Theme.Tertiary
+    SidebarBrand.BackgroundTransparency = 0.16
+    SidebarBrand.BorderSizePixel = 0
+    SidebarBrand.ZIndex = 22
+    SidebarBrand.Parent = Sidebar
+    Corner(SidebarBrand, 12)
+    local brandStroke = Stroke(SidebarBrand, Window.Theme.BorderLight, 0.55, 1)
+    BindTheme(SidebarBrand, "BackgroundColor3", "Tertiary")
+    BindTheme(brandStroke, "Color", "BorderLight")
+
+    local brandDot = Instance.new("Frame")
+    brandDot.Size = UDim2.fromOffset(8, 8)
+    brandDot.Position = UDim2.fromOffset(12, 14)
+    brandDot.BackgroundColor3 = Window.Theme.Accent
+    brandDot.BorderSizePixel = 0
+    brandDot.ZIndex = 23
+    brandDot.Parent = SidebarBrand
+    Corner(brandDot, 99)
+    BindTheme(brandDot, "BackgroundColor3", "Accent")
+
+    local brandTitle = CreateText(SidebarBrand, "NEBULA", 11, Enum.Font.GothamBold)
+    brandTitle.Position = UDim2.fromOffset(28, 5)
+    brandTitle.Size = UDim2.new(1, -36, 0, 18)
+    brandTitle.ZIndex = 23
+    BindTheme(brandTitle, "TextColor3", "Text")
+
+    local brandSub = CreateText(SidebarBrand, "HYBRID UI 6.0", 8, Enum.Font.GothamMedium)
+    brandSub.Position = UDim2.fromOffset(28, 23)
+    brandSub.Size = UDim2.new(1, -36, 0, 15)
+    brandSub.ZIndex = 23
+    BindTheme(brandSub, "TextColor3", "SubText")
+
+    local localTabTop = 72
+
     local TabList = Instance.new("ScrollingFrame")
     TabList.Name = "TabList"
-    TabList.Position = UDim2.fromOffset(10, 12)
-    TabList.Size = UDim2.new(1, -20, 1, -70)
+    TabList.Position = UDim2.fromOffset(10, localTabTop)
+    TabList.Size = UDim2.new(1, -20, 1, -130)
     TabList.BackgroundTransparency = 1
     TabList.BorderSizePixel = 0
     TabList.ScrollBarThickness = 2
@@ -774,7 +850,7 @@ function Library:CreateWindow(options)
     SidebarFooter.Name = "SidebarFooter"
     SidebarFooter.AnchorPoint = Vector2.new(0, 1)
     SidebarFooter.Position = UDim2.new(0, 10, 1, -10)
-    SidebarFooter.Size = UDim2.new(1, -20, 0, 42)
+    SidebarFooter.Size = UDim2.new(1, -20, 0, 48)
     SidebarFooter.BackgroundColor3 = Window.Theme.Tertiary
     SidebarFooter.BackgroundTransparency = 0.28
     SidebarFooter.BorderSizePixel = 0
@@ -822,14 +898,24 @@ function Library:CreateWindow(options)
     -- content header: current tab name + search
     local ContentHeader = Instance.new("Frame")
     ContentHeader.Name = "ContentHeader"
-    ContentHeader.Size = UDim2.new(1, 0, 0, 48)
+    ContentHeader.Size = UDim2.new(1, 0, 0, 58)
     ContentHeader.BackgroundTransparency = 1
     ContentHeader.Parent = Content
 
-    local CurrentTabLabel = CreateText(ContentHeader, "", 14, Enum.Font.GothamBold)
-    CurrentTabLabel.Position = UDim2.fromOffset(18, 0)
+    local CurrentTabLabel = CreateText(ContentHeader, "", 15, Enum.Font.GothamBold)
+    CurrentTabLabel.Position = UDim2.fromOffset(22, 7)
     CurrentTabLabel.Size = UDim2.new(1, -220, 1, 0)
     BindTheme(CurrentTabLabel, "TextColor3", "Text")
+
+    local ContentAccent = Instance.new("Frame")
+    ContentAccent.Name = "ContentAccent"
+    ContentAccent.Size = UDim2.fromOffset(4, 20)
+    ContentAccent.Position = UDim2.fromOffset(8, 11)
+    ContentAccent.BackgroundColor3 = Window.Theme.Accent
+    ContentAccent.BorderSizePixel = 0
+    ContentAccent.Parent = ContentHeader
+    Corner(ContentAccent, 4)
+    BindTheme(ContentAccent, "BackgroundColor3", "Accent")
 
     -- search
     local SearchBox = Instance.new("TextBox")
@@ -843,8 +929,8 @@ function Library:CreateWindow(options)
     SearchBox.PlaceholderColor3 = Window.Theme.SubText
     SearchBox.BackgroundColor3 = Window.Theme.Tertiary
     SearchBox.BorderSizePixel = 0
-    SearchBox.Position = UDim2.new(1, -190, 0.5, -15)
-    SearchBox.Size = UDim2.fromOffset(172, 30)
+    SearchBox.Position = UDim2.new(1, -190, 0.5, -10)
+    SearchBox.Size = UDim2.fromOffset(172, 32)
     SearchBox.Parent = ContentHeader
 
     Corner(SearchBox, 8)
@@ -887,7 +973,7 @@ function Library:CreateWindow(options)
 
     local HeaderLine = Instance.new("Frame")
     HeaderLine.Name = "HeaderLine"
-    HeaderLine.Position = UDim2.fromOffset(18, 43)
+    HeaderLine.Position = UDim2.fromOffset(18, 53)
     HeaderLine.Size = UDim2.new(1, -36, 0, 1)
     HeaderLine.BackgroundColor3 = Window.Theme.Border
     HeaderLine.BackgroundTransparency = 0.45
@@ -902,6 +988,21 @@ function Library:CreateWindow(options)
     Track(SearchClear.Activated:Connect(function()
         SearchBox.Text = ""
         SearchBox:ReleaseFocus()
+    end))
+
+    -- v6: Ctrl+K focuses the built-in search, Esc releases it.
+    Track(UserInputService.InputBegan:Connect(function(input, processed)
+        if processed then return end
+        if input.KeyCode == Enum.KeyCode.K
+            and (UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.RightControl)) then
+            pcall(function()
+                SearchBox:CaptureFocus()
+            end)
+        elseif input.KeyCode == Enum.KeyCode.Escape and SearchBox:IsFocused() then
+            pcall(function()
+                SearchBox:ReleaseFocus()
+            end)
+        end
     end))
 
     Track(SearchClear.MouseEnter:Connect(function()
@@ -1773,6 +1874,16 @@ function Library:CreateWindow(options)
                     end)
                 end
 
+                if other.TabMark then
+                    pcall(function()
+                        other.TabMark.BackgroundColor3 = isActive and Window.Theme.AccentDark or Window.Theme.Tertiary
+                        local markLabel = other.TabMark:FindFirstChildOfClass("TextLabel")
+                        if markLabel then
+                            markLabel.TextColor3 = isActive and Window.Theme.Text or Window.Theme.SubText
+                        end
+                    end)
+                end
+
                 if other.Indicator then
                     pcall(function()
                         other.Indicator.Visible = true
@@ -1859,7 +1970,7 @@ function Library:CreateWindow(options)
 
         local Button = Instance.new("TextButton")
         Button.Name = Tab.Name
-        Button.Size = UDim2.new(1, 0, 0, 36)
+        Button.Size = UDim2.new(1, 0, 0, 40)
         Button.BackgroundColor3 = Window.Theme.Tertiary
         Button.BackgroundTransparency = 1
         Button.BorderSizePixel = 0
@@ -1870,13 +1981,13 @@ function Library:CreateWindow(options)
         Button.Active = true
         Button.Parent = TabList
 
-        Corner(Button, 8)
+        Corner(Button, 11)
         local buttonStroke = Stroke(Button, Window.Theme.Accent, 1, 1)
         BindTheme(buttonStroke, "Color", "Accent")
 
         local Indicator = Instance.new("Frame")
-        Indicator.Size = UDim2.new(0, 3, 0, 8)
-        Indicator.Position = UDim2.fromOffset(0, 9)
+        Indicator.Size = UDim2.new(0, 3, 0, 10)
+        Indicator.Position = UDim2.fromOffset(0, 15)
         Indicator.AnchorPoint = Vector2.new(0, 0)
         Indicator.BackgroundColor3 = Window.Theme.Accent
         Indicator.BorderSizePixel = 0
@@ -1921,6 +2032,28 @@ function Library:CreateWindow(options)
         Tab.Icon = iconImage
         Tab.Indicator = Indicator
 
+        if not hasImageIcon then
+            local tabMark = Instance.new("Frame")
+            tabMark.Name = "TabMark"
+            tabMark.Size = UDim2.fromOffset(20, 20)
+            tabMark.Position = UDim2.fromOffset(8, 10)
+            tabMark.BackgroundColor3 = Window.Theme.Tertiary
+            tabMark.BackgroundTransparency = 0.2
+            tabMark.BorderSizePixel = 0
+            tabMark.ZIndex = 22
+            tabMark.Parent = Button
+            Corner(tabMark, 7)
+            BindTheme(tabMark, "BackgroundColor3", "Tertiary")
+            local markText = CreateText(tabMark, string.upper(string.sub(Tab.Name, 1, 1)), 8, Enum.Font.GothamBold)
+            markText.TextXAlignment = Enum.TextXAlignment.Center
+            markText.TextColor3 = Window.Theme.SubText
+            markText.ZIndex = 23
+            BindTheme(markText, "TextColor3", "SubText")
+            Tab.TabMark = tabMark
+            buttonText.Position = UDim2.fromOffset(38, 0)
+            buttonText.Size = UDim2.new(1, -48, 1, 0)
+        end
+
         Track(Button.MouseEnter:Connect(function()
             if Window.ActiveTab ~= Tab then
                 Tween(Button, { BackgroundTransparency = 0.55 }, 0.15)
@@ -1943,8 +2076,8 @@ function Library:CreateWindow(options)
 
         local Scroll = Instance.new("ScrollingFrame")
         Scroll.Name = Tab.Name .. "_Content"
-        Scroll.Position = UDim2.fromOffset(12, 56)
-        Scroll.Size = UDim2.new(1, -24, 1, -68)
+        Scroll.Position = UDim2.fromOffset(12, 66)
+        Scroll.Size = UDim2.new(1, -24, 1, -78)
         Scroll.BackgroundTransparency = 1
         Scroll.BorderSizePixel = 0
         Scroll.ScrollBarThickness = 3
@@ -4397,8 +4530,8 @@ function Library:CreateWindow(options)
 
         Content.Position = UDim2.fromOffset(SIDEBAR_WIDTH, 0)
         Content.Size = UDim2.new(1, -SIDEBAR_WIDTH, 1, 0)
-        SearchBox.Size = UDim2.fromOffset(172, 30)
-        SearchBox.Position = UDim2.new(1, -190, 0.5, -15)
+        SearchBox.Size = UDim2.fromOffset(172, 32)
+        SearchBox.Position = UDim2.new(1, -190, 0.5, -10)
         searchIcon.Position = UDim2.new(1, -184, 0.5, -13)
         CurrentTabLabel.Size = UDim2.new(1, -220, 1, 0)
 
@@ -4445,8 +4578,8 @@ function Library:CreateWindow(options)
             -- Mobile header: prevent the fixed desktop search field from
             -- colliding with the current-tab title on narrow screens.
             local searchWidth = math.clamp(width - 150, 104, 172)
-            SearchBox.Size = UDim2.fromOffset(searchWidth, 30)
-            SearchBox.Position = UDim2.new(1, -searchWidth - 10, 0.5, -15)
+            SearchBox.Size = UDim2.fromOffset(searchWidth, 32)
+            SearchBox.Position = UDim2.new(1, -searchWidth - 10, 0.5, -10)
             searchIcon.Position = UDim2.new(1, -searchWidth - 4, 0.5, -13)
             CurrentTabLabel.Size = UDim2.new(1, -searchWidth - 36, 1, 0)
         end
