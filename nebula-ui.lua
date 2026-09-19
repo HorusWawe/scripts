@@ -103,7 +103,7 @@ end
 
 local Library = {}
 
-Library.Version = "6.1.1"
+Library.Version = "6.1.2"
 Library.Name = "Nebula UI"
 Library.Plugins = {}
 
@@ -437,17 +437,19 @@ function Library:CreateWindow(options)
     Window.Subtitle = options.Subtitle or "Universal Interface"
     Window.Design = {
         Name = "Nebula Hybrid",
-        Version = "6.1.1",
+        Version = "6.1.2",
         Compact = options.Compact == true,
         Glow = options.Glow ~= false,
         CardRadius = tonumber(options.CardRadius) or 11,
     }
+    Window.ShowTabMarks = options.ShowTabMarks == true
     Window.Size = options.Size or UDim2.fromOffset(840, 560)
     Window.ToggleKey = options.ToggleKey or Enum.KeyCode.RightControl -- default: Right Ctrl
 
     Window.Theme = self.CurrentTheme
 
     Window._connections = {}
+    Window._UnloadCallbacks = {}
     Window._themeBinds = {}
     Window.Elements = {}
     Window.Tabs = {}
@@ -519,6 +521,13 @@ function Library:CreateWindow(options)
     Window.Track = function(a, b)
         local connection = b or a
         return Track(connection)
+    end
+
+    function Window:OnUnload(callback)
+        if type(callback) == "function" then
+            table.insert(Window._UnloadCallbacks, callback)
+        end
+        return Window
     end
 
     --------------------------------------------------
@@ -781,7 +790,7 @@ function Library:CreateWindow(options)
     brandTitle.ZIndex = 23
     BindTheme(brandTitle, "TextColor3", "Text")
 
-    local brandSub = CreateText(SidebarBrand, "HYBRID UI 6.1.1", 8, Enum.Font.GothamMedium)
+    local brandSub = CreateText(SidebarBrand, "HYBRID UI 6.1.2", 8, Enum.Font.GothamMedium)
     brandSub.Position = UDim2.fromOffset(28, 23)
     brandSub.Size = UDim2.new(1, -36, 0, 15)
     brandSub.ZIndex = 23
@@ -988,17 +997,29 @@ function Library:CreateWindow(options)
         if not Main or not Main.Parent then return end
         local vp, topLeft, bottomRight = GetSafeViewport()
         local abs = Main.AbsoluteSize
+        local anchor = Main.AnchorPoint
         local margin = 8
-        local halfW = math.max(1, abs.X * 0.5)
-        local halfH = math.max(1, abs.Y * 0.5)
-        local minX = math.max(margin + halfW, topLeft.X + halfW + margin)
-        local maxX = math.max(minX, vp.X - bottomRight.X - halfW - margin)
-        local minY = math.max(margin + halfH, topLeft.Y + halfH + margin)
-        local maxY = math.max(minY, vp.Y - bottomRight.Y - halfH - margin)
-        local pos = Main.AbsolutePosition + abs * 0.5
-        local x = math.clamp(pos.X, minX, maxX)
-        local y = math.clamp(pos.Y, minY, maxY)
-        Main.Position = UDim2.fromOffset(x, y)
+
+        -- Clamp the actual top-left absolute position, then convert it back
+        -- through the current AnchorPoint. This remains correct even if a
+        -- caller changes Main.AnchorPoint after creation.
+        local currentX = Main.AbsolutePosition.X
+        local currentY = Main.AbsolutePosition.Y
+        local minX = topLeft.X + margin
+        local maxX = vp.X - bottomRight.X - abs.X - margin
+        local minY = topLeft.Y + margin
+        local maxY = vp.Y - bottomRight.Y - abs.Y - margin
+
+        maxX = math.max(minX, maxX)
+        maxY = math.max(minY, maxY)
+
+        local x = math.clamp(currentX, minX, maxX)
+        local y = math.clamp(currentY, minY, maxY)
+
+        Main.Position = UDim2.fromOffset(
+            x + anchor.X * abs.X,
+            y + anchor.Y * abs.Y
+        )
     end
 
     local dragging = false
@@ -1897,20 +1918,8 @@ function Library:CreateWindow(options)
     end
 
     function Window:AddTab(name, icon)
-        -- Accept both common call orders: AddTab(name, icon) and AddTab(icon, name).
-        -- Asset IDs are never used as the visible tab title.
-        if type(name) == "string" and type(icon) == "string" then
-            local nameLooksLikeIcon = string.find(name, "rbxassetid://", 1, true) ~= nil
-            local iconLooksLikeIcon = string.find(icon, "rbxassetid://", 1, true) ~= nil
-            if nameLooksLikeIcon and not iconLooksLikeIcon then
-                name, icon = icon, name
-            end
-        elseif type(name) == "string" and string.find(name, "rbxassetid://", 1, true) ~= nil and icon == nil then
-            -- If an old script supplied only an icon, give it a safe title.
-            icon = name
-            name = "Tab"
-        end
-
+        -- v6.1.2: keep the API deterministic. The first argument is always
+        -- the tab name and the optional second argument is always the icon.
         local Tab = {}
         Tab.Name = tostring(name or "Tab")
         Tab.Icon = icon
@@ -1985,7 +1994,7 @@ function Library:CreateWindow(options)
         Tab.Icon = iconImage
         Tab.Indicator = Indicator
 
-        if not hasImageIcon then
+        if not hasImageIcon and Window.ShowTabMarks then
             local tabMark = Instance.new("Frame")
             tabMark.Name = "TabMark"
             tabMark.Size = UDim2.fromOffset(20, 20)
@@ -5453,6 +5462,16 @@ function Library:CreateWindow(options)
         Window.Destroyed = true
         mobilePulseCancelled = true
 
+        -- Run owner-provided cleanup before disconnecting/destroying the GUI.
+        -- This is intentionally before ScreenGui:Destroy so external systems
+        -- (for example a script's RenderStepped loop) can clean their own state.
+        if Window._UnloadCallbacks then
+            for _, callback in ipairs(Window._UnloadCallbacks) do
+                pcall(callback)
+            end
+            table.clear(Window._UnloadCallbacks)
+        end
+
         for _, element in ipairs(Window.AllElements) do
             if element and element._Cleanup then
                 local cleanup = element._Cleanup
@@ -5495,6 +5514,7 @@ function Library:CreateWindow(options)
         table.clear(Window.ConfigElements)
         table.clear(Window._themeBinds)
         table.clear(Window._Groups)
+        table.clear(Window._UnloadCallbacks)
         table.clear(Window._baseTextSizes)
         if CURRENT_APPEARANCE == Window.Appearance then CURRENT_APPEARANCE = nil end
 
