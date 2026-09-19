@@ -1,9 +1,9 @@
 --[[
     Nebula UI v6.1
     Universal Roblox/Luau UI Framework
-    Built on top of Nebula UI v3 - visuals unchanged, architecture layered on top.
+    Built on top of Nebula UI 6.1 - hybrid architecture and visuals.
 
-    Changelog v4 (architecture, per the v4 plan):
+    Changelog 6.1 (architecture and visual fixes):
     - Unified Component/Element API: every input element (Toggle, Slider, Button,
       Dropdown, MultiDropdown, ColorPicker, Textbox, Keybind, Label, Paragraph)
       now exposes the same base methods: Set/Get (where meaningful), SetVisible,
@@ -28,7 +28,7 @@
       collapse to a single column on small screens - no user code changes needed.
 
     Nothing in v3's visuals (theming, animations, notifications, color picker,
-    dropdowns, search, mobile button) was rewritten - v4 wraps and extends it.
+    dropdowns, search, mobile button) was rewritten - v6.1:wraps and extends it.
 ]]
 
 --------------------------------------------------
@@ -452,7 +452,7 @@ function Library:CreateWindow(options)
     Window.Elements = {}
     Window.Tabs = {}
 
-    -- v4: unified element registry (every element created through a Tab or a
+    -- v6.1: unified element registry (every element created through a Tab or a
     -- Group ends up in here, whether or not it has an ID).
     Window.AllElements = {}
     Window.ElementsByID = {}
@@ -498,12 +498,12 @@ function Library:CreateWindow(options)
     Window.State = self:CreateState()
     CURRENT_APPEARANCE = Window.Appearance
 
-    -- v4: Window.Size read before the open-animation section overwrites Main's
+    -- v6.1: Window.Size read before the open-animation section overwrites Main's
     -- Size, so responsive logic and the open animation share one source of truth.
     local finalSize = Window.Size
 
     --------------------------------------------------
-    -- v4: UNIFIED TRACK (every connection in the library flows through this,
+    -- v6.1: UNIFIED TRACK (every connection in the library flows through this,
     -- so Window:Unload() cleans everything up in one place)
     --------------------------------------------------
 
@@ -619,17 +619,9 @@ function Library:CreateWindow(options)
     Header.BorderSizePixel = 0
     Header.Parent = Main
 
-    -- v6.1: no alpha gradient over Header. Its opacity is controlled only
-    -- by Window.Appearance.Transparency.
-    local headerMask = Instance.new("Frame")
-    headerMask.BackgroundColor3 = Window.Theme.Secondary
-    headerMask.BorderSizePixel = 0
-    headerMask.Position = UDim2.new(0, 0, 1, -12)
-    headerMask.Size = UDim2.new(1, 0, 0, 12)
-    headerMask.Parent = Header
-
+    -- v6.1: Header opacity is controlled only by Appearance.Transparency.
+    -- The shell itself is clipped by Main's UICorner; no mask is needed.
     BindTheme(Header, "BackgroundColor3", "Secondary")
-    BindTheme(headerMask, "BackgroundColor3", "Secondary")
 
     -- accent hairline
     local AccentLine = Instance.new("Frame")
@@ -647,8 +639,9 @@ function Library:CreateWindow(options)
     local HeaderGlow = Instance.new("Frame")
     HeaderGlow.Name = "HeaderGlow"
     HeaderGlow.BackgroundColor3 = Window.Theme.Accent
-    HeaderGlow.BackgroundTransparency = 0.94
+    HeaderGlow.BackgroundTransparency = 1
     HeaderGlow.BorderSizePixel = 0
+    HeaderGlow.Visible = false
     HeaderGlow.Position = UDim2.new(0, 54, 0, 10)
     HeaderGlow.Size = UDim2.fromOffset(180, 54)
     HeaderGlow.ZIndex = 0
@@ -657,7 +650,8 @@ function Library:CreateWindow(options)
     BindTheme(HeaderGlow, "BackgroundColor3", "Accent")
 
     local HeaderMeta = CreateText(Header, "NEBULA  //  CONTROL CENTER", 9, Enum.Font.GothamMedium)
-    HeaderMeta.Position = UDim2.fromOffset(18, 62)
+    HeaderMeta.Visible = false
+    HeaderMeta.Position = UDim2.fromOffset(18, 60)
     HeaderMeta.Size = UDim2.fromOffset(210, 12)
     HeaderMeta.TextColor3 = Window.Theme.SubText
     HeaderMeta.ZIndex = 3
@@ -735,7 +729,7 @@ function Library:CreateWindow(options)
         return btn
     end
 
-    -- v4: Menu button, only shown once Responsive collapses the sidebar
+    -- v6.1: Menu button, only shown once Responsive collapses the sidebar
     local Menu = CreateControl("=", -114)
     Menu.Visible = false
 
@@ -752,6 +746,7 @@ function Library:CreateWindow(options)
     Body.Size = UDim2.new(1, 0, 1, -76)
     Body.BackgroundTransparency = 1
     Body.GroupTransparency = 0
+    Body.ClipsDescendants = true
     Body.Parent = Main
 
     --------------------------------------------------
@@ -766,6 +761,7 @@ function Library:CreateWindow(options)
     Sidebar.BackgroundColor3 = Window.Theme.Background
     Sidebar.BackgroundTransparency = 0
     Sidebar.ZIndex = 20
+    Sidebar.ClipsDescendants = true
     Sidebar.Parent = Body
     BindTheme(Sidebar, "BackgroundColor3", "Background")
 
@@ -808,7 +804,7 @@ function Library:CreateWindow(options)
     brandTitle.ZIndex = 23
     BindTheme(brandTitle, "TextColor3", "Text")
 
-    local brandSub = CreateText(SidebarBrand, "HYBRID UI 6.0", 8, Enum.Font.GothamMedium)
+    local brandSub = CreateText(SidebarBrand, "HYBRID UI 6.1", 8, Enum.Font.GothamMedium)
     brandSub.Position = UDim2.fromOffset(28, 23)
     brandSub.Size = UDim2.new(1, -36, 0, 15)
     brandSub.ZIndex = 23
@@ -870,23 +866,10 @@ function Library:CreateWindow(options)
     Content.Size = UDim2.new(1, -SIDEBAR_WIDTH, 1, 0)
     Content.BackgroundColor3 = Window.Theme.Background
     Content.BorderSizePixel = 0
+    Content.ClipsDescendants = true
     Content.Parent = Body
 
-    Corner(Content, options.CornerRadius or 12)
-    for _, child in ipairs(Content:GetChildren()) do
-        if child:IsA("UICorner") then child:SetAttribute("NebulaWindowCorner", true) end
-    end
-
-    local contentMask = Instance.new("Frame")
-    contentMask.BackgroundColor3 = Window.Theme.Background
-    contentMask.BorderSizePixel = 0
-    contentMask.Position = UDim2.new(0, 0, 0, -12)
-    contentMask.Size = UDim2.new(1, 0, 0, 12)
-    contentMask.ZIndex = 0
-    contentMask.Parent = Content
-
     BindTheme(Content, "BackgroundColor3", "Background")
-    BindTheme(contentMask, "BackgroundColor3", "Background")
 
     -- content header: current tab name + search
     local ContentHeader = Instance.new("Frame")
@@ -1157,7 +1140,7 @@ function Library:CreateWindow(options)
             end
         end
 
-        -- v4: lifecycle hook - lets custom elements/plugins react to theme swaps
+        -- v6.1: lifecycle hook - lets custom elements/plugins react to theme swaps
         -- beyond simple property binding.
         for _, element in ipairs(Window.AllElements) do
             if element._ApplyTheme then
@@ -1289,7 +1272,7 @@ function Library:CreateWindow(options)
     end
 
     --------------------------------------------------
-    -- v4: ELEMENT FINALIZER (unified Component/Element API)
+    -- v6.1: ELEMENT FINALIZER (unified Component/Element API)
     --------------------------------------------------
 
     -- Every Tab:AddX / Group:AddX function calls this at the very end instead
@@ -1437,7 +1420,7 @@ function Library:CreateWindow(options)
 
         -- v6.1: every settable UI element gets a stable config key even when
         -- the consumer did not provide an explicit ID. This makes configs
-        -- useful for existing scripts that never used the v4 ID API.
+        -- useful for existing scripts that never used the v6.1:ID API.
         if Element.Get and Element.Set then
             local baseKey = tostring(Element.ID or (Tab.Name .. "::" .. tostring(Element.Name)))
             local key = baseKey
@@ -1508,7 +1491,7 @@ function Library:CreateWindow(options)
     end
 
     --------------------------------------------------
-    -- v4: ELEMENT LOOKUP / STATE MANAGER
+    -- v6.1: ELEMENT LOOKUP / STATE MANAGER
     --------------------------------------------------
 
     function Window:GetElement(id)
@@ -1930,7 +1913,7 @@ function Library:CreateWindow(options)
         pcall(function() tab:_Search("") end)
         pcall(function() CurrentTabLabel.Text = tab.Name end)
 
-        -- v4: on mobile, picking a tab also closes the sidebar overlay
+        -- v6.1: on mobile, picking a tab also closes the sidebar overlay
         if Window.IsMobile and Sidebar.Visible then
             Window:_CloseMobileSidebar()
         end
@@ -2276,7 +2259,7 @@ function Library:CreateWindow(options)
         --------------------------------------------------
 
         function Tab:AddLabel(options)
-            -- v4: kept backward compatible with v3's Tab:AddLabel(text)
+            -- v6.1: kept backward compatible with v3's Tab:AddLabel(text)
             if type(options) == "string" or options == nil then
                 options = { Name = options }
             end
@@ -4032,7 +4015,7 @@ function Library:CreateWindow(options)
         end
 
         --------------------------------------------------
-        -- v4: LAYOUT ENGINE - Tab:AddGroup({ Columns = N })
+        -- v6.1: LAYOUT ENGINE - Tab:AddGroup({ Columns = N })
         --------------------------------------------------
 
         -- Returns a Group with the same AddX methods as a Tab. Elements added
@@ -4480,7 +4463,7 @@ function Library:CreateWindow(options)
     end)
 
     --------------------------------------------------
-    -- v4: RESPONSIVE LAYOUT
+    -- v6.1: RESPONSIVE LAYOUT
     --------------------------------------------------
 
     Window.Responsive = options.Responsive ~= false
@@ -4538,7 +4521,9 @@ function Library:CreateWindow(options)
 
     local function ApplyMobileLayout()
         Menu.Visible = true
-        MobileButton.Visible = Window.MobileLayout.Enabled and not Main.Visible and UserInputService.TouchEnabled and (options.ShowMobileButton ~= false)
+        local touchDevice = UserInputService.TouchEnabled
+        pcall(function() touchDevice = touchDevice or UserInputService.PreferredInput == Enum.PreferredInput.Touch end)
+        MobileButton.Visible = Window.MobileLayout.Enabled and not Main.Visible and touchDevice and (options.ShowMobileButton ~= false)
         Sidebar.Visible = false
         Sidebar.ZIndex = 50
         Sidebar.Size = UDim2.new(0, math.min(SIDEBAR_WIDTH + 30, Window.Breakpoints.SidebarMax), 1, 0)
@@ -5002,7 +4987,7 @@ function Library:CreateWindow(options)
     -- Run the first safe clamp now that the method exists.
     pcall(function() Window:ClampMobileButtons() end)
 
-    -- v5: APPEARANCE / MOTION SYSTEM
+    -- v6.1: APPEARANCE / MOTION SYSTEM
     --------------------------------------------------
 
     local function CopyTheme(theme)
@@ -5018,7 +5003,7 @@ function Library:CreateWindow(options)
 
         -- Window radius belongs to the window shell. Do not overwrite every
         -- button/toggle/dropdown radius when the user changes this setting.
-        for _, instance in ipairs({Main, Content}) do
+        for _, instance in ipairs({Main}) do
             if instance and instance.Parent then
                 for _, child in ipairs(instance:GetChildren()) do
                     if child:IsA("UICorner") and not child:GetAttribute("NebulaKeepRadius") then
@@ -5064,8 +5049,14 @@ function Library:CreateWindow(options)
             end
         end
 
-        -- Responsive layout may have just changed sizes/visibility. Reassert
-        -- the single source of truth for shell opacity afterwards.
+        -- Decorative shell layers must never make a transparent setting look
+        -- like an accidental glass overlay. Their alpha is tied to the same
+        -- setting rather than fighting it.
+        pcall(function()
+            SidebarGradient.Transparency = NumberSequence.new(amount)
+        end)
+        -- HeaderGlow is intentionally disabled in 6.1; it previously looked
+        -- like an unwanted translucent panel when Transparency was 0.
     end
 
     function Window:SetCornerRadius(value)
@@ -5185,7 +5176,7 @@ function Library:CreateWindow(options)
     end
 
     --------------------------------------------------
-    -- v5: DEFAULT THEME / SETTINGS TAB
+    -- v6.1: DEFAULT THEME / SETTINGS TAB
     --------------------------------------------------
 
     Window:SetTheme(options.Theme or "Nebula")
@@ -5575,7 +5566,7 @@ function Library:CreateWindow(options)
     end)
 
     --------------------------------------------------
-    -- v5: LOADING SCREEN
+    -- v6.1: LOADING SCREEN
     --------------------------------------------------
 
     local function ShowLoadingScreen()
