@@ -1,5 +1,5 @@
 --[[
-    Nebula UI v5.4
+    Nebula UI v6.1
     Universal Roblox/Luau UI Framework
     Built on top of Nebula UI v3 - visuals unchanged, architecture layered on top.
 
@@ -32,7 +32,7 @@
 ]]
 
 --------------------------------------------------
--- v6.0 HYBRID VISUAL UPDATE
+-- v6.1 HYBRID CORE FIX UPDATE
 --------------------------------------------------
 -- - Persistent configs are scoped per window title so different scripts do not collide.
 -- - Settings/config manager is fully built into the library; script authors need no extra code.
@@ -69,8 +69,8 @@ local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 -- DUPLICATE CLEANUP
 --------------------------------------------------
 
-local GUI_NAME = "__NebulaUI_v5"
-local ACTIVE_WINDOW_KEY = "__NebulaUI_v5_ACTIVE_WINDOW"
+local GUI_NAME = "__NebulaUI_v6"
+local ACTIVE_WINDOW_KEY = "__NebulaUI_v6_ACTIVE_WINDOW"
 
 local previousWindow = rawget(_G, ACTIVE_WINDOW_KEY)
 if previousWindow and type(previousWindow.Unload) == "function" then
@@ -79,10 +79,18 @@ if previousWindow and type(previousWindow.Unload) == "function" then
     end)
 end
 
-rawset(_G, ACTIVE_WINDOW_KEY, nil)
+-- Clean up older Nebula generations too, so 5.x/6.0 cannot visually stack
+-- underneath 6.1 after an executor reload.
+for _, legacyKey in ipairs({"__NebulaUI_v5_ACTIVE_WINDOW", "__NebulaUI_v6_ACTIVE_WINDOW"}) do
+    local legacyWindow = rawget(_G, legacyKey)
+    if legacyWindow and legacyWindow ~= previousWindow and type(legacyWindow.Unload) == "function" then
+        pcall(function() legacyWindow:Unload(true) end)
+    end
+    rawset(_G, legacyKey, nil)
+end
 
 for _, child in ipairs(PlayerGui:GetChildren()) do
-    if child.Name == GUI_NAME then
+    if child.Name == GUI_NAME or child.Name == "__NebulaUI_v5" then
         pcall(function()
             child:Destroy()
         end)
@@ -95,7 +103,7 @@ end
 
 local Library = {}
 
-Library.Version = "6.0.0"
+Library.Version = "6.1.0"
 Library.Name = "Nebula UI"
 Library.Plugins = {}
 
@@ -429,7 +437,7 @@ function Library:CreateWindow(options)
     Window.Subtitle = options.Subtitle or "Universal Interface"
     Window.Design = {
         Name = "Nebula Hybrid",
-        Version = "6.0",
+        Version = "6.1",
         Compact = options.Compact == true,
         Glow = options.Glow ~= false,
         CardRadius = tonumber(options.CardRadius) or 11,
@@ -562,11 +570,16 @@ function Library:CreateWindow(options)
     Main.Position = UDim2.fromScale(0.5, 0.5)
     Main.Size = Window.Size
     Main.BackgroundColor3 = Window.Theme.Background
+    Main.BackgroundTransparency = 0
     Main.BorderSizePixel = 0
+    Main.ClipsDescendants = true
     Main.ZIndex = 2
     Main.Parent = ScreenGui
 
     Corner(Main, options.CornerRadius or 12)
+    for _, child in ipairs(Main:GetChildren()) do
+        if child:IsA("UICorner") then child:SetAttribute("NebulaWindowCorner", true) end
+    end
     local mainStroke = Stroke(Main, Window.Theme.Border, 0.35)
 
     BindTheme(Main, "BackgroundColor3", "Background")
@@ -574,21 +587,8 @@ function Library:CreateWindow(options)
 
     Window.Main = Main
 
-    -- v5.2: subtle glass gradient for the main shell.
-    local mainGradient = Instance.new("UIGradient")
-    mainGradient.Name = "NebulaMainGradient"
-    mainGradient.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
-        ColorSequenceKeypoint.new(0.45, Color3.fromRGB(235, 225, 255)),
-        ColorSequenceKeypoint.new(1, Color3.fromRGB(170, 150, 220))
-    })
-    mainGradient.Transparency = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, 0.985),
-        NumberSequenceKeypoint.new(0.5, 0.995),
-        NumberSequenceKeypoint.new(1, 1)
-    })
-    mainGradient.Rotation = 135
-    mainGradient.Parent = Main
+    -- v6.1: the shell owns its opacity. Decorative gradients must not
+    -- override Appearance.Transparency, so the old glass overlay is removed.
 
     --------------------------------------------------
     -- SHADOW
@@ -605,8 +605,8 @@ function Library:CreateWindow(options)
     Shadow.ImageColor3 = Color3.fromRGB(0, 0, 0)
     Shadow.ScaleType = Enum.ScaleType.Slice
     Shadow.SliceCenter = Rect.new(49, 49, 450, 450)
-    Shadow.Parent = Main
-    Shadow.ZIndex = -1
+    Shadow.Parent = ScreenGui
+    Shadow.ZIndex = 1
 
     --------------------------------------------------
     -- HEADER
@@ -619,18 +619,8 @@ function Library:CreateWindow(options)
     Header.BorderSizePixel = 0
     Header.Parent = Main
 
-    local headerGradient = Instance.new("UIGradient")
-    headerGradient.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
-        ColorSequenceKeypoint.new(1, Color3.fromRGB(210, 210, 220))
-    })
-    headerGradient.Transparency = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, 0.78),
-        NumberSequenceKeypoint.new(0.55, 0.91),
-        NumberSequenceKeypoint.new(1, 1)
-    })
-    headerGradient.Parent = Header
-
+    -- v6.1: no alpha gradient over Header. Its opacity is controlled only
+    -- by Window.Appearance.Transparency.
     local headerMask = Instance.new("Frame")
     headerMask.BackgroundColor3 = Window.Theme.Secondary
     headerMask.BorderSizePixel = 0
@@ -667,8 +657,8 @@ function Library:CreateWindow(options)
     BindTheme(HeaderGlow, "BackgroundColor3", "Accent")
 
     local HeaderMeta = CreateText(Header, "NEBULA  //  CONTROL CENTER", 9, Enum.Font.GothamMedium)
-    HeaderMeta.Position = UDim2.new(0, 18, 1, -22)
-    HeaderMeta.Size = UDim2.fromOffset(210, 14)
+    HeaderMeta.Position = UDim2.fromOffset(18, 62)
+    HeaderMeta.Size = UDim2.fromOffset(210, 12)
     HeaderMeta.TextColor3 = Window.Theme.SubText
     HeaderMeta.ZIndex = 3
     BindTheme(HeaderMeta, "TextColor3", "SubText")
@@ -683,7 +673,7 @@ function Library:CreateWindow(options)
     SubtitleLabel.Size = UDim2.new(1, -166, 0, 16)
     BindTheme(SubtitleLabel, "TextColor3", "SubText")
 
-    -- v5.2: compact live-status badge.
+    -- v6.1: compact live-status badge.
     local StatusBadge = Instance.new("Frame")
     StatusBadge.Name = "StatusBadge"
     StatusBadge.AnchorPoint = Vector2.new(1, 0.5)
@@ -883,6 +873,9 @@ function Library:CreateWindow(options)
     Content.Parent = Body
 
     Corner(Content, options.CornerRadius or 12)
+    for _, child in ipairs(Content:GetChildren()) do
+        if child:IsA("UICorner") then child:SetAttribute("NebulaWindowCorner", true) end
+    end
 
     local contentMask = Instance.new("Frame")
     contentMask.BackgroundColor3 = Window.Theme.Background
@@ -1093,7 +1086,7 @@ function Library:CreateWindow(options)
     end))
 
     --------------------------------------------------
-    -- v5.2: SMALL WINDOW APPEARANCE API
+    -- v6.1: SMALL WINDOW APPEARANCE API
     --------------------------------------------------
 
     function Window:SetSidebarWidth(width)
@@ -1442,7 +1435,7 @@ function Library:CreateWindow(options)
         table.insert(Tab.Elements, Element)
         table.insert(Window.AllElements, Element)
 
-        -- v5.3: every settable UI element gets a stable config key even when
+        -- v6.1: every settable UI element gets a stable config key even when
         -- the consumer did not provide an explicit ID. This makes configs
         -- useful for existing scripts that never used the v4 ID API.
         if Element.Get and Element.Set then
@@ -1596,7 +1589,7 @@ function Library:CreateWindow(options)
     end
 
     --------------------------------------------------
-    -- v5.3: PERSISTENT CONFIG MANAGER
+    -- v6.1: PERSISTENT CONFIG MANAGER
     --------------------------------------------------
 
     local HttpService = game:GetService("HttpService")
@@ -1840,7 +1833,7 @@ function Library:CreateWindow(options)
         -- a stale filtered state.
         Window.ActiveTab = tab
 
-        -- v5.4.2: selection must never depend on an animation succeeding.
+        -- v6.1: selection must never depend on an animation succeeding.
         -- The previous version could leave a completely blank window when a
         -- Tween/GUI property operation failed. Visibility is now committed
         -- first, then cosmetic animation is best-effort.
@@ -4525,7 +4518,7 @@ function Library:CreateWindow(options)
         Sidebar.Visible = true
         Sidebar.ZIndex = 2
         Sidebar.Size = UDim2.new(0, SIDEBAR_WIDTH, 1, 0)
-        Sidebar.BackgroundTransparency = 0
+        Sidebar.BackgroundTransparency = math.clamp(tonumber(Window.Appearance.Transparency) or 0, 0, 0.65)
         Sidebar.BackgroundColor3 = Window.Theme.Background
 
         Content.Position = UDim2.fromOffset(SIDEBAR_WIDTH, 0)
@@ -4549,7 +4542,7 @@ function Library:CreateWindow(options)
         Sidebar.Visible = false
         Sidebar.ZIndex = 50
         Sidebar.Size = UDim2.new(0, math.min(SIDEBAR_WIDTH + 30, Window.Breakpoints.SidebarMax), 1, 0)
-        Sidebar.BackgroundTransparency = 0
+        Sidebar.BackgroundTransparency = math.clamp(tonumber(Window.Appearance.Transparency) or 0, 0, 0.65)
         Sidebar.BackgroundColor3 = Window.Theme.Background
 
         Content.Position = UDim2.fromOffset(0, 0)
@@ -4680,7 +4673,7 @@ function Library:CreateWindow(options)
 
     UpdateMobileButtonVisibility()
 
-    -- v5.4.2 navigation repair pass. Keep the actual tab controls alive even
+    -- v6.1 navigation repair pass. Keep the actual tab controls alive even
     -- when responsive sizing changes visibility/stacking. Mobile still uses
     -- the header menu to open the sidebar; desktop always shows the sidebar.
     local function RepairNavigation()
@@ -5022,11 +5015,18 @@ function Library:CreateWindow(options)
 
     local function ApplyCornerRadius()
         local radius = math.max(0, tonumber(Window.Appearance.CornerRadius) or 12)
-        for _, instance in ipairs(ScreenGui:GetDescendants()) do
-            if instance:IsA("UICorner") and not instance:GetAttribute("NebulaKeepRadius") then
-                pcall(function()
-                    instance.CornerRadius = UDim.new(0, radius)
-                end)
+
+        -- Window radius belongs to the window shell. Do not overwrite every
+        -- button/toggle/dropdown radius when the user changes this setting.
+        for _, instance in ipairs({Main, Content}) do
+            if instance and instance.Parent then
+                for _, child in ipairs(instance:GetChildren()) do
+                    if child:IsA("UICorner") and not child:GetAttribute("NebulaKeepRadius") then
+                        pcall(function()
+                            child.CornerRadius = UDim.new(0, radius)
+                        end)
+                    end
+                end
             end
         end
     end
@@ -5063,6 +5063,9 @@ function Library:CreateWindow(options)
                 pcall(function() instance.BackgroundTransparency = amount end)
             end
         end
+
+        -- Responsive layout may have just changed sizes/visibility. Reassert
+        -- the single source of truth for shell opacity afterwards.
     end
 
     function Window:SetCornerRadius(value)
@@ -5419,10 +5422,11 @@ function Library:CreateWindow(options)
     ApplyTransparency()
     if Window.Responsive then
         UpdateResponsive()
+        ApplyTransparency()
     end
 
     --------------------------------------------------
-    -- v5.5: QUICK UI UTILITIES
+    -- v6.1: QUICK UI UTILITIES
     --------------------------------------------------
 
     function Window:Center()
@@ -5451,7 +5455,7 @@ function Library:CreateWindow(options)
     end
 
     --------------------------------------------------
-    -- v5.5: PLUGIN LOADING
+    -- v6.1: PLUGIN LOADING
     --------------------------------------------------
 
     Window._LoadedPlugins = {}
