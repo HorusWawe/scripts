@@ -103,7 +103,7 @@ end
 
 local Library = {}
 
-Library.Version = "6.1.0"
+Library.Version = "6.1.1"
 Library.Name = "Nebula UI"
 Library.Plugins = {}
 
@@ -437,7 +437,7 @@ function Library:CreateWindow(options)
     Window.Subtitle = options.Subtitle or "Universal Interface"
     Window.Design = {
         Name = "Nebula Hybrid",
-        Version = "6.1",
+        Version = "6.1.1",
         Compact = options.Compact == true,
         Glow = options.Glow ~= false,
         CardRadius = tonumber(options.CardRadius) or 11,
@@ -617,6 +617,7 @@ function Library:CreateWindow(options)
     Header.Size = UDim2.new(1, 0, 0, 76)
     Header.BackgroundColor3 = Window.Theme.Secondary
     Header.BorderSizePixel = 0
+    Header.ClipsDescendants = true
     Header.Parent = Main
 
     -- v6.1: Header opacity is controlled only by Appearance.Transparency.
@@ -633,21 +634,6 @@ function Library:CreateWindow(options)
 
     Corner(AccentLine, 3)
     BindTheme(AccentLine, "BackgroundColor3", "Accent")
-
-    -- v6: subtle hybrid-design glow, inspired by modern control-center UIs.
-    -- It is decorative only and does not participate in input/layout logic.
-    local HeaderGlow = Instance.new("Frame")
-    HeaderGlow.Name = "HeaderGlow"
-    HeaderGlow.BackgroundColor3 = Window.Theme.Accent
-    HeaderGlow.BackgroundTransparency = 1
-    HeaderGlow.BorderSizePixel = 0
-    HeaderGlow.Visible = false
-    HeaderGlow.Position = UDim2.new(0, 54, 0, 10)
-    HeaderGlow.Size = UDim2.fromOffset(180, 54)
-    HeaderGlow.ZIndex = 0
-    HeaderGlow.Parent = Header
-    Corner(HeaderGlow, 27)
-    BindTheme(HeaderGlow, "BackgroundColor3", "Accent")
 
     local HeaderMeta = CreateText(Header, "NEBULA  //  CONTROL CENTER", 9, Enum.Font.GothamMedium)
     HeaderMeta.Visible = false
@@ -765,21 +751,12 @@ function Library:CreateWindow(options)
     Sidebar.Parent = Body
     BindTheme(Sidebar, "BackgroundColor3", "Background")
 
-    local SidebarGradient = Instance.new("UIGradient")
-    SidebarGradient.Name = "SidebarGradient"
-    SidebarGradient.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, Window.Theme.Secondary),
-        ColorSequenceKeypoint.new(1, Window.Theme.Background)
-    })
-    SidebarGradient.Rotation = 90
-    SidebarGradient.Parent = Sidebar
-
     local SidebarBrand = Instance.new("Frame")
     SidebarBrand.Name = "SidebarBrand"
     SidebarBrand.Size = UDim2.new(1, -20, 0, 52)
     SidebarBrand.Position = UDim2.fromOffset(10, 10)
     SidebarBrand.BackgroundColor3 = Window.Theme.Tertiary
-    SidebarBrand.BackgroundTransparency = 0.16
+    SidebarBrand.BackgroundTransparency = 0
     SidebarBrand.BorderSizePixel = 0
     SidebarBrand.ZIndex = 22
     SidebarBrand.Parent = Sidebar
@@ -804,7 +781,7 @@ function Library:CreateWindow(options)
     brandTitle.ZIndex = 23
     BindTheme(brandTitle, "TextColor3", "Text")
 
-    local brandSub = CreateText(SidebarBrand, "HYBRID UI 6.1", 8, Enum.Font.GothamMedium)
+    local brandSub = CreateText(SidebarBrand, "HYBRID UI 6.1.1", 8, Enum.Font.GothamMedium)
     brandSub.Position = UDim2.fromOffset(28, 23)
     brandSub.Size = UDim2.new(1, -36, 0, 15)
     brandSub.ZIndex = 23
@@ -838,7 +815,7 @@ function Library:CreateWindow(options)
     SidebarFooter.Position = UDim2.new(0, 10, 1, -10)
     SidebarFooter.Size = UDim2.new(1, -20, 0, 48)
     SidebarFooter.BackgroundColor3 = Window.Theme.Tertiary
-    SidebarFooter.BackgroundTransparency = 0.28
+    SidebarFooter.BackgroundTransparency = 0
     SidebarFooter.BorderSizePixel = 0
     SidebarFooter.Parent = Sidebar
     Corner(SidebarFooter, 10)
@@ -4463,7 +4440,7 @@ function Library:CreateWindow(options)
     end)
 
     --------------------------------------------------
-    -- v6.1: RESPONSIVE LAYOUT
+    -- v6.1.1: RESPONSIVE LAYOUT
     --------------------------------------------------
 
     Window.Responsive = options.Responsive ~= false
@@ -5041,6 +5018,8 @@ function Library:CreateWindow(options)
     end
 
     local function ApplyTransparency()
+        -- 6.1.1: Transparency belongs to the shell. There are no hidden
+        -- gradient/mask layers changing the perceived alpha behind this API.
         local amount = math.clamp(tonumber(Window.Appearance.Transparency) or 0, 0, 0.65)
         local targets = { Main, Header, Sidebar, Content }
         for _, instance in ipairs(targets) do
@@ -5049,14 +5028,14 @@ function Library:CreateWindow(options)
             end
         end
 
-        -- Decorative shell layers must never make a transparent setting look
-        -- like an accidental glass overlay. Their alpha is tied to the same
-        -- setting rather than fighting it.
-        pcall(function()
-            SidebarGradient.Transparency = NumberSequence.new(amount)
-        end)
-        -- HeaderGlow is intentionally disabled in 6.1; it previously looked
-        -- like an unwanted translucent panel when Transparency was 0.
+        -- Internal sidebar surfaces are solid when shell transparency is 0.
+        -- When transparency is enabled, they follow the same setting instead
+        -- of retaining an unrelated fixed alpha.
+        for _, instance in ipairs({SidebarBrand, SidebarFooter}) do
+            if instance and instance.Parent then
+                pcall(function() instance.BackgroundTransparency = amount end)
+            end
+        end
     end
 
     function Window:SetCornerRadius(value)
@@ -5176,7 +5155,7 @@ function Library:CreateWindow(options)
     end
 
     --------------------------------------------------
-    -- v6.1: DEFAULT THEME / SETTINGS TAB
+    -- v6.1.1: DEFAULT THEME / SETTINGS TAB
     --------------------------------------------------
 
     Window:SetTheme(options.Theme or "Nebula")
