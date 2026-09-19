@@ -1,5 +1,5 @@
 --[[
-    Nebula UI v5.2
+    Nebula UI v5.3
     Universal Roblox/Luau UI Framework
     Built on top of Nebula UI v3 - visuals unchanged, architecture layered on top.
 
@@ -79,7 +79,7 @@ end
 
 local Library = {}
 
-Library.Version = "5.2.0"
+Library.Version = "5.3.0"
 Library.Name = "Nebula UI"
 Library.Plugins = {}
 
@@ -4763,6 +4763,435 @@ function Library:CreateWindow(options)
             Callback = function() Window:DeleteConfig(Window._ConfigName or "default") end
         })
     end
+
+
+    --------------------------------------------------
+    -- v5.3 RAYSTYLE VISUAL LAYER
+    -- Visual-only skin. Existing component architecture, callbacks, state,
+    -- configs and element APIs remain intact.
+    --------------------------------------------------
+
+    Window.VisualStyle = "RayStyle"
+
+    local function _VSafe(fn)
+        return pcall(fn)
+    end
+
+    local function _VFindStroke(root)
+        if not root then return nil end
+        for _, child in ipairs(root:GetChildren()) do
+            if child:IsA("UIStroke") then
+                return child
+            end
+        end
+        return nil
+    end
+
+    local function _VFindMainButton(root)
+        if not root then return nil end
+        if root:IsA("GuiButton") then return root end
+        for _, child in ipairs(root:GetDescendants()) do
+            if child:IsA("GuiButton") then
+                return child
+            end
+        end
+        return nil
+    end
+
+    local function _VStyleRoot(root)
+        if not root or not root:IsA("GuiObject") then return end
+
+        local rootName = tostring(root.Name)
+        local elementRoots = {
+            Button = true, Toggle = true, Slider = true, Dropdown = true,
+            MultiDropdown = true, Textbox = true, Keybind = true,
+            ColorPicker = true, Paragraph = true, Container = true
+        }
+
+        if elementRoots[rootName] then
+            _VSafe(function()
+                root.BackgroundColor3 = Window.Theme.Secondary
+                if root.BackgroundTransparency > 0.95 then
+                    root.BackgroundTransparency = 0
+                end
+            end)
+
+            local stroke = _VFindStroke(root)
+            if stroke then
+                _VSafe(function()
+                    stroke.Color = Window.Theme.Border
+                    stroke.Transparency = 0.58
+                    stroke.Thickness = 1
+                end)
+            end
+
+            for _, child in ipairs(root:GetDescendants()) do
+                if child:IsA("UICorner") and not child:GetAttribute("NebulaKeepRadius") then
+                    _VSafe(function()
+                        child.CornerRadius = UDim.new(0, 10)
+                    end)
+                elseif child:IsA("TextLabel") or child:IsA("TextBox") then
+                    _VSafe(function()
+                        if child.TextSize >= 11 and child.TextSize <= 13 then
+                            child.TextSize = 12
+                        end
+                    end)
+                end
+            end
+        end
+
+        if rootName == "Paragraph" then
+            for _, child in ipairs(root:GetChildren()) do
+                if child:IsA("Frame") and child ~= root then
+                    _VSafe(function()
+                        if child.Size.X.Offset == 3 then
+                            child.Size = UDim2.new(0, 3, 1, -18)
+                            child.Position = UDim2.fromOffset(0, 9)
+                        end
+                    end)
+                end
+            end
+        end
+    end
+
+    local function _VStyleTab(tab)
+        if not tab or not tab.Button then return end
+
+        local button = tab.Button
+        local label = tab.ButtonText
+        local indicator = tab.Indicator
+
+        _VSafe(function()
+            button.Size = UDim2.new(1, 0, 0, 40)
+            button.BackgroundColor3 = Window.Theme.Tertiary
+        end)
+
+        _VSafe(function()
+            button.Active = true
+        end)
+
+        if indicator then
+            _VSafe(function()
+                indicator.Size = UDim2.new(0, 3, 0, 20)
+                indicator.Position = UDim2.fromOffset(0, 10)
+                indicator.BackgroundColor3 = Window.Theme.Accent
+            end)
+        end
+
+        if label then
+            _VSafe(function()
+                label.Position = UDim2.fromOffset(tab.Icon and 38 or 16, 0)
+                label.Size = UDim2.new(1, -(tab.Icon and 48 or 26), 1, 0)
+                label.Font = Enum.Font.GothamMedium
+                label.TextSize = 12
+            end)
+        end
+
+        if tab.Icon then
+            _VSafe(function()
+                tab.Icon.Size = UDim2.fromOffset(18, 18)
+                tab.Icon.Position = UDim2.fromOffset(10, 11)
+            end)
+        end
+    end
+
+    local function _VRefreshTabState()
+        for _, tab in ipairs(Window.Tabs) do
+            if tab.Button then
+                local active = tab == Window.ActiveTab
+                _VSafe(function()
+                    Tween(tab.Button, {
+                        BackgroundColor3 = active and Window.Theme.Tertiary or Window.Theme.Secondary,
+                        BackgroundTransparency = active and 0 or 1
+                    }, 0.16)
+                end)
+                if tab.ButtonText then
+                    _VSafe(function()
+                        Tween(tab.ButtonText, {
+                            TextColor3 = active and Window.Theme.Text or Window.Theme.SubText
+                        }, 0.16)
+                    end)
+                end
+                if tab.Indicator then
+                    _VSafe(function()
+                        Tween(tab.Indicator, {
+                            BackgroundTransparency = active and 0 or 1,
+                            Size = active
+                                and UDim2.new(0, 3, 0, 20)
+                                or UDim2.new(0, 3, 0, 8)
+                        }, 0.18, Enum.EasingStyle.Quint)
+                    end)
+                end
+            end
+        end
+    end
+
+    -- Upgrade the window shell without replacing it.
+    _VSafe(function()
+        Main.Size = (options.Size or UDim2.fromOffset(760, 520))
+        Main.BackgroundColor3 = Window.Theme.Background
+    end)
+
+    _VSafe(function()
+        if mainStroke then
+            mainStroke.Transparency = 0.18
+            mainStroke.Thickness = 1
+        end
+    end)
+
+    _VSafe(function()
+        Header.Size = UDim2.new(1, 0, 0, 66)
+        Header.BackgroundColor3 = Window.Theme.Secondary
+    end)
+
+    _VSafe(function()
+        Body.Position = UDim2.fromOffset(0, 66)
+        Body.Size = UDim2.new(1, 0, 1, -66)
+    end)
+
+    -- Remove the old gradient/mask treatment. Flat surfaces are intentional:
+    -- they keep the UI crisp at every transparency level.
+    _VSafe(function()
+        headerGradient:Destroy()
+    end)
+    _VSafe(function()
+        headerMask:Destroy()
+    end)
+    _VSafe(function()
+        contentMask:Destroy()
+    end)
+
+    -- Header brand mark.
+    local Brand = Instance.new("Frame")
+    Brand.Name = "BrandMark"
+    Brand.Size = UDim2.fromOffset(30, 30)
+    Brand.Position = UDim2.fromOffset(16, 17)
+    Brand.BackgroundColor3 = Window.Theme.Accent
+    Brand.BorderSizePixel = 0
+    Brand.ZIndex = Header.ZIndex + 1
+    Brand.Parent = Header
+    Corner(Brand, 9)
+    BindTheme(Brand, "BackgroundColor3", "Accent")
+
+    local BrandText = CreateText(Brand, "N", 15, Enum.Font.GothamBold)
+    BrandText.TextColor3 = Color3.new(1, 1, 1)
+    BrandText.TextXAlignment = Enum.TextXAlignment.Center
+    BindTheme(BrandText, "TextColor3", "Text")
+
+    _VSafe(function()
+        TitleLabel.Position = UDim2.fromOffset(56, 15)
+        TitleLabel.Size = UDim2.new(1, -230, 0, 22)
+        TitleLabel.TextSize = 15
+        TitleLabel.Font = Enum.Font.GothamBold
+
+        SubtitleLabel.Position = UDim2.fromOffset(56, 38)
+        SubtitleLabel.Size = UDim2.new(1, -230, 0, 17)
+        SubtitleLabel.TextSize = 10
+    end)
+
+    -- Compact status badge.
+    local ReadyBadge = Instance.new("TextLabel")
+    ReadyBadge.Name = "ReadyBadge"
+    ReadyBadge.AnchorPoint = Vector2.new(1, 0.5)
+    ReadyBadge.Position = UDim2.new(1, -124, 0.5, 0)
+    ReadyBadge.Size = UDim2.fromOffset(68, 24)
+    ReadyBadge.BackgroundColor3 = Window.Theme.Tertiary
+    ReadyBadge.BorderSizePixel = 0
+    ReadyBadge.Text = "●  READY"
+    ReadyBadge.TextSize = 9
+    ReadyBadge.Font = Enum.Font.GothamBold
+    ReadyBadge.TextColor3 = Window.Theme.Success
+    ReadyBadge.ZIndex = Header.ZIndex + 1
+    ReadyBadge.Parent = Header
+    Corner(ReadyBadge, 8)
+    local readyStroke = Stroke(ReadyBadge, Window.Theme.Border, 0.5)
+    BindTheme(ReadyBadge, "BackgroundColor3", "Tertiary")
+    BindTheme(readyStroke, "Color", "Border")
+
+    -- Sidebar becomes a clean navigation rail.
+    _VSafe(function()
+        Sidebar.Size = UDim2.new(0, 174, 1, 0)
+        Sidebar.BackgroundColor3 = Window.Theme.Secondary
+        Sidebar.BackgroundTransparency = 0
+        Sidebar.BorderSizePixel = 0
+    end)
+
+    local SidebarStroke = Stroke(Sidebar, Window.Theme.Border, 0.45, 1)
+    BindTheme(SidebarStroke, "Color", "Border")
+
+    _VSafe(function()
+        TabList.Position = UDim2.fromOffset(10, 12)
+        TabList.Size = UDim2.new(1, -20, 1, -24)
+    end)
+
+    _VSafe(function()
+        Content.Position = UDim2.fromOffset(174, 0)
+        Content.Size = UDim2.new(1, -174, 1, 0)
+        Content.BackgroundColor3 = Window.Theme.Background
+    end)
+
+    _VSafe(function()
+        ContentHeader.Size = UDim2.new(1, 0, 0, 54)
+        CurrentTabLabel.Position = UDim2.fromOffset(18, 0)
+        CurrentTabLabel.TextSize = 15
+        CurrentTabLabel.Font = Enum.Font.GothamBold
+
+        SearchBox.Position = UDim2.new(1, -196, 0.5, -16)
+        SearchBox.Size = UDim2.fromOffset(182, 32)
+        SearchBox.TextSize = 11
+    end)
+
+    -- Small divider under the content header.
+    local ContentDivider = Instance.new("Frame")
+    ContentDivider.Name = "ContentDivider"
+    ContentDivider.Position = UDim2.new(0, 16, 0, 53)
+    ContentDivider.Size = UDim2.new(1, -32, 0, 1)
+    ContentDivider.BackgroundColor3 = Window.Theme.Border
+    ContentDivider.BorderSizePixel = 0
+    ContentDivider.ZIndex = ContentHeader.ZIndex + 1
+    ContentDivider.Parent = Content
+    BindTheme(ContentDivider, "BackgroundColor3", "Border")
+
+    _VSafe(function()
+        SearchBox.BackgroundColor3 = Window.Theme.Tertiary
+    end)
+
+    -- Style tabs already created by Settings and any future tabs.
+    for _, tab in ipairs(Window.Tabs) do
+        _VStyleTab(tab)
+    end
+
+    -- Future user tabs are created after CreateWindow returns.
+    local originalAddTab = Window.AddTab
+    Window.AddTab = function(self, ...)
+        local tab = originalAddTab(self, ...)
+        task.defer(function()
+            if not self.Destroyed then
+                _VStyleTab(tab)
+                _VRefreshTabState()
+            end
+        end)
+        return tab
+    end
+
+    -- Every finalized element gets the same visual language, without changing
+    -- its behavior or public API.
+    local originalFinalize = Window._Finalize
+    Window._Finalize = function(self, tab, element, elementOptions, titleLabel)
+        local result = originalFinalize(self, tab, element, elementOptions, titleLabel)
+        task.defer(function()
+            if result and result.Root and not self.Destroyed then
+                _VStyleRoot(result.Root)
+            end
+        end)
+        return result
+    end
+
+    -- Apply to elements that were already present (Settings).
+    for _, element in ipairs(Window.AllElements or {}) do
+        if element and element.Root then
+            _VStyleRoot(element.Root)
+        end
+    end
+
+    -- Polished hover treatment for every actual control inside an element.
+    local function _VBindHover(root)
+        local button = _VFindMainButton(root)
+        if not button or button:GetAttribute("NebulaRayHover") then return end
+
+        button:SetAttribute("NebulaRayHover", true)
+        local base = button.BackgroundColor3
+
+        Track(button.MouseEnter:Connect(function()
+            if Window.Destroyed then return end
+            Tween(button, {
+                BackgroundColor3 = Window.Theme.Hover,
+                BackgroundTransparency = 0
+            }, 0.12)
+        end))
+
+        Track(button.MouseLeave:Connect(function()
+            if Window.Destroyed then return end
+            Tween(button, {
+                BackgroundColor3 = base,
+                BackgroundTransparency = 0
+            }, 0.14)
+        end))
+    end
+
+    for _, element in ipairs(Window.AllElements or {}) do
+        if element and element.Root then
+            _VBindHover(element.Root)
+        end
+    end
+
+    -- Rebind the hover treatment whenever a new element is finalized.
+    local originalFinalize2 = Window._Finalize
+    Window._Finalize = function(self, tab, element, elementOptions, titleLabel)
+        local result = originalFinalize2(self, tab, element, elementOptions, titleLabel)
+        task.defer(function()
+            if result and result.Root and not self.Destroyed then
+                _VStyleRoot(result.Root)
+                _VBindHover(result.Root)
+            end
+        end)
+        return result
+    end
+
+    -- Re-apply the visual shell after theme changes.
+    local originalSetTheme = Window.SetTheme
+    Window.SetTheme = function(self, theme)
+        local result = originalSetTheme(self, theme)
+
+        task.defer(function()
+            if self.Destroyed then return end
+            _VSafe(function() Brand.BackgroundColor3 = self.Theme.Accent end)
+            _VSafe(function() ReadyBadge.BackgroundColor3 = self.Theme.Tertiary end)
+            _VSafe(function() Sidebar.BackgroundColor3 = self.Theme.Secondary end)
+            _VSafe(function() Content.BackgroundColor3 = self.Theme.Background end)
+            _VSafe(function() ContentDivider.BackgroundColor3 = self.Theme.Border end)
+
+            for _, tab in ipairs(self.Tabs) do
+                _VStyleTab(tab)
+            end
+            _VRefreshTabState()
+
+            for _, element in ipairs(self.AllElements or {}) do
+                if element and element.Root then
+                    _VStyleRoot(element.Root)
+                end
+            end
+        end)
+
+        return result
+    end
+
+    -- Make the visual selection state win over the old tab skin.
+    local originalSelectTab = Window.SelectTab
+    Window.SelectTab = function(self, tab)
+        local result = originalSelectTab(self, tab)
+        task.defer(function()
+            if not self.Destroyed then
+                _VRefreshTabState()
+            end
+        end)
+        return result
+    end
+
+    -- Give the mobile launcher the same premium treatment.
+    _VSafe(function()
+        MobileButton.Size = UDim2.fromOffset(52, 52)
+        MobileButton.TextSize = 17
+        MobileButton.BackgroundColor3 = Window.Theme.Accent
+    end)
+
+    -- Ensure the settings tab itself follows the new visual language.
+    if SettingsTab then
+        _VStyleTab(SettingsTab)
+    end
+
+    -- Keep the existing API's sizing/responsive systems authoritative.
+    -- This is visual skin only; it does not replace responsive calculations.
 
     -- Always start on the first user tab. Settings is a system tab and must
     -- never steal the initial selection from the script using the library.
