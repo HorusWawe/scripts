@@ -1,5 +1,5 @@
 --[[
-    Nebula UI v5.0
+    Nebula UI v5.2
     Universal Roblox/Luau UI Framework
     Built on top of Nebula UI v3 - visuals unchanged, architecture layered on top.
 
@@ -79,7 +79,7 @@ end
 
 local Library = {}
 
-Library.Version = "5.1.0"
+Library.Version = "5.2.0"
 Library.Name = "Nebula UI"
 Library.Plugins = {}
 
@@ -4515,6 +4515,253 @@ function Library:CreateWindow(options)
 
     if options.ShowLoading ~= false then
         ShowLoadingScreen()
+    end
+
+    --------------------------------------------------
+    -- v5.2 ADDITIVE SYSTEM PACK
+    -- IMPORTANT: existing v5.1 systems above are intentionally untouched.
+    -- This block only adds optional/default framework services.
+    --------------------------------------------------
+
+    -- Safe unload hooks: additive lifecycle API for scripts/plugins.
+    Window._UnloadHooks = Window._UnloadHooks or {}
+    function Window:OnUnload(callback)
+        if type(callback) ~= "function" then
+            return Window
+        end
+        table.insert(Window._UnloadHooks, callback)
+        return Window
+    end
+
+    -- Preserve the original Unload implementation and run hooks before GUI teardown.
+    if not Window._Nebula52UnloadWrapped then
+        local OriginalUnload = Window.Unload
+        Window.Unload = function(self, immediate)
+            if self._Nebula52Unloading then
+                return
+            end
+            self._Nebula52Unloading = true
+            for i = #self._UnloadHooks, 1, -1 do
+                local callback = self._UnloadHooks[i]
+                pcall(callback, self)
+            end
+            table.clear(self._UnloadHooks)
+            local result
+            if OriginalUnload then
+                result = OriginalUnload(self, immediate)
+            end
+            self._Nebula52Unloading = false
+            return result
+        end
+        Window._Nebula52UnloadWrapped = true
+    end
+
+    -- Persistent config manager. Uses executor filesystem APIs when available.
+    local function _N52FS()
+        return type(writefile) == "function"
+            and type(readfile) == "function"
+            and type(isfile) == "function"
+            and type(makefolder) == "function"
+            and type(isfolder) == "function"
+            and type(delfile) == "function"
+    end
+
+    local function _N52EnsureFolder(path)
+        if not _N52FS() then return false end
+        pcall(function() if not isfolder(path) then makefolder(path) end end)
+        return true
+    end
+
+    local function _N52Encode(v)
+        local t = typeof(v)
+        if t == "Color3" then
+            return {__type="Color3", r=v.R, g=v.G, b=v.B}
+        elseif t == "UDim2" then
+            return {__type="UDim2", xs=v.X.Scale, xo=v.X.Offset, ys=v.Y.Scale, yo=v.Y.Offset}
+        elseif t == "Vector2" then
+            return {__type="Vector2", x=v.X, y=v.Y}
+        elseif type(v) == "table" then
+            local out = {}
+            for k,x in pairs(v) do out[tostring(k)] = _N52Encode(x) end
+            return out
+        end
+        return v
+    end
+
+    local function _N52Decode(v)
+        if type(v) ~= "table" then return v end
+        if v.__type == "Color3" then
+            return Color3.new(tonumber(v.r) or 0, tonumber(v.g) or 0, tonumber(v.b) or 0)
+        elseif v.__type == "UDim2" then
+            return UDim2.new(tonumber(v.xs) or 0, tonumber(v.xo) or 0, tonumber(v.ys) or 0, tonumber(v.yo) or 0)
+        elseif v.__type == "Vector2" then
+            return Vector2.new(tonumber(v.x) or 0, tonumber(v.y) or 0)
+        end
+        local out = {}
+        for k,x in pairs(v) do out[k] = _N52Decode(x) end
+        return out
+    end
+
+    Window.ConfigFolder = "NebulaUI/configs/" .. tostring(Window.Title or "Window"):gsub("[^%w_%-]", "_")
+    _N52EnsureFolder("NebulaUI")
+    _N52EnsureFolder("NebulaUI/configs")
+    _N52EnsureFolder(Window.ConfigFolder)
+
+    function Window:GetConfigPath(name)
+        name = tostring(name or "default"):gsub("[^%w_%-]", "_")
+        if name == "" then name = "default" end
+        return Window.ConfigFolder .. "/" .. name .. ".json"
+    end
+
+    function Window:SaveConfig(name)
+        if not _N52FS() then return false end
+        local HttpService = game:GetService("HttpService")
+        local payload = {
+            Version = Library.Version,
+            State = _N52Encode(Window.GetState and Window:GetState() or {}),
+            Appearance = _N52Encode(Window.Appearance),
+            MobileLayout = _N52Encode(Window.MobileLayout),
+            Theme = Window.CurrentThemeName or Library.CurrentThemeName,
+        }
+        local ok = pcall(function()
+            writefile(Window:GetConfigPath(name), HttpService:JSONEncode(payload))
+        end)
+        return ok
+    end
+
+    function Window:LoadConfig(name)
+        if not _N52FS() then return false end
+        local path = Window:GetConfigPath(name)
+        if not isfile(path) then return false end
+        local HttpService = game:GetService("HttpService")
+        local ok, payload = pcall(function() return HttpService:JSONDecode(readfile(path)) end)
+        if not ok or type(payload) ~= "table" then return false end
+        if payload.Appearance then
+            local appearance = _N52Decode(payload.Appearance)
+            for k,v in pairs(appearance) do Window.Appearance[k] = v end
+            if Window.ApplyAppearance then pcall(Window.ApplyAppearance, Window) end
+        end
+        if payload.MobileLayout then
+            local mobile = _N52Decode(payload.MobileLayout)
+            for k,v in pairs(mobile) do
+                if k ~= "SavedActions" then Window.MobileLayout[k] = v end
+            end
+        end
+        if payload.Theme and Window.SetTheme then pcall(Window.SetTheme, Window, payload.Theme) end
+        if payload.State and Window.SetState then pcall(Window.SetState, Window, _N52Decode(payload.State)) end
+        return true
+    end
+
+    function Window:DeleteConfig(name)
+        if not _N52FS() then return false end
+        local path = Window:GetConfigPath(name)
+        if not isfile(path) then return false end
+        return pcall(delfile, path)
+    end
+
+    function Window:HasConfig(name)
+        if not _N52FS() then return false end
+        return isfile(Window:GetConfigPath(name))
+    end
+
+    -- Mobile controls: expose the existing mobile system without changing its behavior.
+    function Window:SetMobileButtonWidth(value)
+        value = math.clamp(tonumber(value) or Window.MobileLayout.ButtonWidth or 110, 36, 220)
+        Window.MobileLayout.ButtonWidth = value
+        if MobileButton then MobileButton.Size = UDim2.fromOffset(value, Window.MobileLayout.ButtonHeight or 34) end
+        return Window
+    end
+
+    function Window:SetMobileButtonHeight(value)
+        value = math.clamp(tonumber(value) or Window.MobileLayout.ButtonHeight or 34, 32, 110)
+        Window.MobileLayout.ButtonHeight = value
+        if MobileButton then MobileButton.Size = UDim2.fromOffset(Window.MobileLayout.ButtonWidth or 110, value) end
+        return Window
+    end
+
+    function Window:SetMobileButtonStyle(color, transparency)
+        if typeof(color) == "Color3" then
+            Window.MobileLayout.ButtonColor = color
+            if MobileButton then MobileButton.BackgroundColor3 = color end
+        end
+        if transparency ~= nil then
+            Window.MobileLayout.ButtonTransparency = math.clamp(tonumber(transparency) or 0, 0, 1)
+            if MobileButton and not Window.MobileLayout.EditMode then MobileButton.BackgroundTransparency = Window.MobileLayout.ButtonTransparency end
+        end
+        return Window
+    end
+
+    -- Small diagnostics API; no rendering changes.
+    function Window:GetUISnapshot()
+        return {
+            Version = Library.Version,
+            Theme = Window.CurrentThemeName or Library.CurrentThemeName,
+            Responsive = Window.Responsive == true,
+            IsMobile = Window.IsMobile == true,
+            Tabs = #Window.Tabs,
+            Elements = #(Window.AllElements or {}),
+            Destroyed = Window.Destroyed == true,
+        }
+    end
+
+    -- Additive settings controls. Existing settings remain untouched.
+    if SettingsTab then
+        SettingsTab:AddSection("Mobile")
+        SettingsTab:AddToggle({
+            Name = "Mobile Layout",
+            Default = Window.MobileLayout.Enabled,
+            Callback = function(value) Window.MobileLayout.Enabled = value == true end
+        })
+        SettingsTab:AddDropdown({
+            Name = "Open Button Mode",
+            Values = {"Watermark", "Button"},
+            Default = Window.MobileLayout.Mode or "Watermark",
+            Callback = function(value)
+                if Window.SetMobileButtonMode then Window:SetMobileButtonMode(value) end
+            end
+        })
+        SettingsTab:AddTextbox({
+            Name = "Open Button Text",
+            Default = Window.MobileLayout.ButtonText or "Nebula",
+            Callback = function(value)
+                if Window.SetMobileButtonText then Window:SetMobileButtonText(value) end
+            end
+        })
+        SettingsTab:AddSlider({
+            Name = "Button Width",
+            Min = 36,
+            Max = 220,
+            Default = Window.MobileLayout.ButtonWidth or 110,
+            Rounding = 0,
+            Callback = function(value) Window:SetMobileButtonWidth(value) end
+        })
+        SettingsTab:AddSlider({
+            Name = "Button Height",
+            Min = 32,
+            Max = 110,
+            Default = Window.MobileLayout.ButtonHeight or 34,
+            Rounding = 0,
+            Callback = function(value) Window:SetMobileButtonHeight(value) end
+        })
+
+        SettingsTab:AddSection("Configs")
+        SettingsTab:AddTextbox({
+            Name = "Config Name",
+            Default = "default",
+            Callback = function(value) Window._ConfigName = tostring(value or "default") end
+        })
+        SettingsTab:AddButton({
+            Name = "Save Config",
+            Callback = function() Window:SaveConfig(Window._ConfigName or "default") end
+        })
+        SettingsTab:AddButton({
+            Name = "Load Config",
+            Callback = function() Window:LoadConfig(Window._ConfigName or "default") end
+        })
+        SettingsTab:AddButton({
+            Name = "Delete Config",
+            Callback = function() Window:DeleteConfig(Window._ConfigName or "default") end
+        })
     end
 
     -- Always start on the first user tab. Settings is a system tab and must
