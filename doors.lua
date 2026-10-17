@@ -12,6 +12,9 @@
 local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local Lighting = game:GetService("Lighting")
 
 local plr = Players.LocalPlayer
 local char = plr.Character or plr.CharacterAdded:Wait()
@@ -27,7 +30,7 @@ local Window = Rayfield:CreateWindow({
 	LoadingTitle = "LOADINGGGGGGGGG",
 	LoadingSubtitle = "author HorusWawe",
 	ToggleUIKeybind = "K",
-	ConfigurationSaving = { Enabled = false, FileName = "KuromiX_Doors" }
+	ConfigurationSaving = { Enabled = false, FileName = "Horus_Doors" }
 })
 
 -- Tabs
@@ -72,6 +75,18 @@ local entitynames = {
 	"HideMoving", "TimothyMoving", "DupeMoving",
 	"FloorMoving", "FigureMoving", -- i dont know why but i will keep this in here to make this script more stable
 }
+
+local extraEntityNames = {
+	"Eyes", "BackdoorRush", "BackdoorLookman", "GloombatSwarm",
+	"A60", "A120", "JeffTheKiller",
+}
+
+local function isEntityName(name)
+	if table.find(entitynames, name) or table.find(extraEntityNames, name) then
+		return true
+	end
+	return name:sub(-6) == "Moving"
+end
 
 -- Scan interval variables
 local doorScanInterval = 3
@@ -929,14 +944,189 @@ ConfigTab:CreateSlider({
 	end
 })
 
+local VisualTab = Window:CreateTab("Visuals", nil)
+
+-- ---------- Fullbright ----------
+local fbBackup, fbConn
+
+VisualTab:CreateToggle({
+	Name = "Fullbright",
+	CurrentValue = false,
+	Flag = "vis_fullbright",
+	Callback = function(v)
+		if v then
+			fbBackup = {
+				Brightness = Lighting.Brightness,
+				ClockTime = Lighting.ClockTime,
+				GlobalShadows = Lighting.GlobalShadows,
+				Ambient = Lighting.Ambient,
+				FogEnd = Lighting.FogEnd,
+			}
+			fbConn = RunService.RenderStepped:Connect(function()
+				Lighting.Brightness = 2
+				Lighting.ClockTime = 14
+				Lighting.GlobalShadows = false
+				Lighting.Ambient = Color3.fromRGB(170, 170, 170)
+				Lighting.FogEnd = 1e9
+			end)
+		else
+			if fbConn then fbConn:Disconnect() fbConn = nil end
+			if fbBackup then
+				for k, val in pairs(fbBackup) do
+					Lighting[k] = val
+				end
+				fbBackup = nil
+			end
+		end
+	end
+})
+
+-- ---------- FOV ----------
+local fovEnabled = false
+local fovValue = 70
+local fovConn
+
+VisualTab:CreateToggle({
+	Name = "Custom FOV",
+	CurrentValue = false,
+	Flag = "vis_fov_toggle",
+	Callback = function(v)
+		fovEnabled = v
+		if fovConn then fovConn:Disconnect() fovConn = nil end
+		if v then
+			fovConn = RunService.RenderStepped:Connect(function()
+				local cam = Workspace.CurrentCamera
+				if cam then cam.FieldOfView = fovValue end
+			end)
+		end
+	end
+})
+
+VisualTab:CreateSlider({
+	Name = "FOV",
+	Range = {60, 120},
+	Increment = 1,
+	Suffix = "°",
+	CurrentValue = 70,
+	Flag = "vis_fov",
+	Callback = function(value)
+		fovValue = value
+	end
+})
+
+-- ---------- Трейсеры к сущностям (нужен Drawing в экзекьюторе) ----------
+local tracerConn
+local tracerLines = {}
+
+local function clearTracers()
+	for _, line in pairs(tracerLines) do
+		pcall(function() line:Remove() end)
+	end
+	table.clear(tracerLines)
+end
+
+VisualTab:CreateToggle({
+	Name = "Tracers (Entities)",
+	CurrentValue = false,
+	Flag = "vis_tracers",
+	Callback = function(v)
+		if tracerConn then tracerConn:Disconnect() tracerConn = nil end
+		clearTracers()
+		if not v then return end
+
+		if not (Drawing and Drawing.new) then
+			Rayfield:Notify({
+				Title = "Tracers",
+				Content = "Твой экзекьютор не поддерживает Drawing",
+				Duration = 5,
+			})
+			return
+		end
+
+		tracerConn = RunService.RenderStepped:Connect(function()
+			local cam = Workspace.CurrentCamera
+			if not cam then return end
+
+			local vp = cam.ViewportSize
+			local from = Vector2.new(vp.X / 2, vp.Y)
+
+			for _, m in ipairs(Workspace:GetChildren()) do
+				if m:IsA("Model") and isEntityName(m.Name) and not tracerLines[m] then
+					local line = Drawing.new("Line")
+					line.Thickness = 1.5
+					line.Color = Color3.fromRGB(255, 25, 25)
+					line.Transparency = 1
+					line.Visible = false
+					tracerLines[m] = line
+				end
+			end
+
+			for m, line in pairs(tracerLines) do
+				if not m.Parent then
+					pcall(function() line:Remove() end)
+					tracerLines[m] = nil
+				else
+					local pos, onScreen = cam:WorldToViewportPoint(m:GetPivot().Position)
+					if onScreen and pos.Z > 0 then
+						line.From = from
+						line.To = Vector2.new(pos.X, pos.Y)
+						line.Visible = true
+					else
+						line.Visible = false
+					end
+				end
+			end
+		end)
+	end
+})
+
+-- ---------- Логгер имён: показывает РЕАЛЬНЫЕ имена новых объектов в workspace ----------
+-- Включи, дождись сущности и посмотри консоль (F9) или уведомление.
+local loggerOn = false
+
+Workspace.ChildAdded:Connect(function(c)
+	if not loggerOn then return end
+	print("[ENTITY LOG] " .. c.Name .. " (" .. c.ClassName .. ")")
+	Rayfield:Notify({
+		Title = "Новый объект",
+		Content = c.Name .. " [" .. c.ClassName .. "]",
+		Duration = 4,
+	})
+end)
+
+MiscTab:CreateToggle({
+	Name = "Entity Name Logger",
+	CurrentValue = false,
+	Flag = "misc_logger",
+	Callback = function(v)
+		loggerOn = v
+	end
+})
+
+-- ---------- Очистка для твоей существующей выгрузки ----------
+-- Вызови visualsCleanup() в своей функции выгрузки.
+local function visualsCleanup()
+	if fbConn then fbConn:Disconnect() fbConn = nil end
+	if fbBackup then
+		for k, val in pairs(fbBackup) do
+			Lighting[k] = val
+		end
+		fbBackup = nil
+	end
+	if fovConn then fovConn:Disconnect() fovConn = nil end
+	if tracerConn then tracerConn:Disconnect() tracerConn = nil end
+	clearTracers()
+	loggerOn = false
+end
+
 InfoTab:CreateParagraph({
-	Title = "KuromiX Doors",
-	Content = "Hi.. I hope you're enjoying this Script I made.\nJoin my Discord for updates: discord.gg/uG5wXsFHjk\nGive my GitHub Repo a star or contribute: https://github.com/nucax/KuromiX"
+	Title = "Wilset Doors",
+	Content = "Hi.. I hope you're enjoying this Script I made. my GitHub Repo a star or contribute: https://github.com/HorusWawe"
 })
 InfoTab:CreateDivider()
 InfoTab:CreateParagraph({
 	Title = "Last Updated",
-	Content = "24th July 2026"
+	Content = "17th oct 2026"
 })
 InfoTab:CreateParagraph({
 	Title = "By The Way",
